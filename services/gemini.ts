@@ -1,3 +1,4 @@
+
 import { GoogleGenAI, Type, Modality } from "@google/genai";
 import { Clip, Suggestion } from "../types";
 
@@ -63,27 +64,43 @@ const base64ToUint8Array = (base64: string) => {
 // --- API CALLS ---
 
 export const chatWithGemini = async (
-    history: { role: 'user' | 'model' | 'system', text: string }[],
-    message: string
+    history: { role: 'user' | 'model' | 'system', text?: string, parts?: any[] }[],
+    message: string | any[]
 ): Promise<string> => {
     const ai = getAiClient();
+    
+    // Normalize history to the API format
     const apiHistory = history
         .filter(msg => msg.role === 'user' || msg.role === 'model')
-        .map(msg => ({
-            role: msg.role as 'user' | 'model',
-            parts: [{ text: msg.text }]
-        }));
+        .map(msg => {
+            if (msg.parts) {
+                return { role: msg.role as 'user' | 'model', parts: msg.parts };
+            }
+            return { role: msg.role as 'user' | 'model', parts: [{ text: msg.text || '' }] };
+        });
 
     const chat = ai.chats.create({
         model: 'gemini-3-flash-preview',
         history: apiHistory,
         config: {
-            systemInstruction: "You are an intelligent video editing assistant. You help users navigate the editor, suggest creative ideas, and analyze video content.",
+            systemInstruction: "You are an intelligent video editing assistant. You help users navigate the editor, suggest creative ideas, and analyze video content. When provided with timeline ranges, analyze the visual and audio content to give specific advice.",
         }
     });
 
     try {
-        const result = await chat.sendMessage({ message });
+        // If message is a complex array (multimodal), pass it directly to parts
+        // If it's a string, wrap in parts object (Note: SDK behavior)
+        let msgPayload;
+        if (typeof message === 'string') {
+            msgPayload = { message };
+        } else {
+             // For multimodal, we construct a message object with parts
+             // BUT sdk `sendMessage` takes `message: string | Part[] | ...`
+             // Checking SDK types, sendMessage takes `message: string | Array<string | Part>`
+             msgPayload = { message: message };
+        }
+        
+        const result = await chat.sendMessage(msgPayload);
         return result.text;
     } catch (e: any) {
         console.error("Chat Error:", e);

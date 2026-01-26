@@ -1,3 +1,4 @@
+
 export interface Clip {
   id: string;
   title: string;
@@ -47,4 +48,14 @@ export interface ChatMessage {
   role: 'user' | 'model' | 'system';
   text: string;
   suggestions?: Suggestion[];
+}
+
+// NEW: Editor Truth for a selection
+export interface TimelineRange {
+  start: number; // Global timeline start (seconds)
+  end: number;   // Global timeline end (seconds)
+  tracks: {
+    id: number;
+    clips: Clip[]; // Only clips intersecting this range
+  }[];
 }

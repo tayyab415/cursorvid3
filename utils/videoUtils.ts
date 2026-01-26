@@ -1,3 +1,4 @@
+
 /**
  * Extracts a sequence of frames from a video file.
  * This simulates "Video Understanding" by feeding the model a visual storyboard
@@ -152,6 +153,58 @@ export const extractAudioFromVideo = async (file: File | Blob): Promise<string> 
         reader.readAsArrayBuffer(file);
     });
 };
+
+/**
+ * Downloads a source URL, decodes it, and extracts a specific time slice as WAV.
+ * This preserves the "Soul" of the video (audio rhythm) for Gemini.
+ */
+export const sliceAudioBlob = async (sourceUrl: string, start: number, duration: number): Promise<string | null> => {
+    try {
+        const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+        const response = await fetch(sourceUrl);
+        const arrayBuffer = await response.arrayBuffer();
+        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+
+        // Calculate sample offsets
+        const sampleRate = audioBuffer.sampleRate;
+        const startSample = Math.floor(start * sampleRate);
+        const endSample = Math.floor((start + duration) * sampleRate);
+        const length = endSample - startSample;
+
+        if (length <= 0 || startSample >= audioBuffer.length) return null;
+
+        // Create new sliced buffer
+        const slicedBuffer = audioContext.createBuffer(
+            audioBuffer.numberOfChannels,
+            length,
+            sampleRate
+        );
+
+        for (let i = 0; i < audioBuffer.numberOfChannels; i++) {
+            const channelData = audioBuffer.getChannelData(i);
+            const slicedData = slicedBuffer.getChannelData(i);
+            for (let j = 0; j < length; j++) {
+                if (startSample + j < channelData.length) {
+                    slicedData[j] = channelData[startSample + j];
+                }
+            }
+        }
+
+        const wavBlob = bufferToWav(slicedBuffer);
+        
+        return new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onloadend = () => {
+                const base64 = reader.result as string;
+                resolve(base64.split(',')[1]);
+            };
+            reader.readAsDataURL(wavBlob);
+        });
+    } catch (e) {
+        console.error("Failed to slice audio:", e);
+        return null;
+    }
+}
 
 // Simple WAV encoder helper
 function bufferToWav(abuffer: AudioBuffer) {

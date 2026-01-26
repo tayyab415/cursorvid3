@@ -1,4 +1,5 @@
 
+
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Timeline } from './components/Timeline';
 import { CanvasControls } from './components/CanvasControls';
@@ -1054,7 +1055,21 @@ export default function App() {
           </div>
         </div>
         <aside className="w-80 border-l border-neutral-800 bg-neutral-900 flex flex-col z-[150] relative">
-          <AIAssistant selectedClip={primarySelectedClip} onRequestRangeSelect={() => { const defaultStart = currentTime; const maxDur = availableVideo ? availableVideo.duration : 10; const defaultEnd = Math.min(defaultStart + 5, maxDur); setLiveScopeRange({ start: defaultStart, end: defaultEnd }); setRangeModalOpen(true); }} isSelectingRange={isSelectingScope} timelineRange={liveScopeRange} />
+          <AIAssistant 
+            selectedClip={primarySelectedClip} 
+            onRequestRangeSelect={() => { 
+                const defaultStart = currentTime; 
+                const maxDur = availableVideo ? availableVideo.duration : 10; 
+                const defaultEnd = Math.min(defaultStart + 5, maxDur); 
+                setLiveScopeRange({ start: defaultStart, end: defaultEnd }); 
+                setIsSelectingScope(true); 
+                setRangeModalOpen(true); 
+            }} 
+            isSelectingRange={isSelectingScope} 
+            timelineRange={liveScopeRange}
+            allClips={clips}
+            mediaRefs={mediaRefs}
+          />
         </aside>
       </div>
     </div>
