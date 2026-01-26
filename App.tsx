@@ -1,11 +1,10 @@
 
-
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Timeline } from './components/Timeline';
 import { CanvasControls } from './components/CanvasControls';
 import { AIAssistant } from './components/sidebar/AIAssistant';
-import { Clip, ChatMessage, Suggestion } from './types';
-import { analyzeVideoFrames, suggestEdits, generateImage, generateVideo, generateSpeech, generateSubtitles, chatWithGemini } from './services/gemini';
+import { Clip, ChatMessage, Suggestion, ToolAction } from './types';
+import { analyzeVideoFrames, suggestEdits, generateImage, generateVideo, generateSpeech, generateSubtitles, chatWithGemini, generateRefinement, determinePlacement } from './services/gemini';
 import { extractFramesFromVideo, captureFrameFromVideoUrl, extractAudioFromVideo } from './utils/videoUtils';
 import { Video, Wand2, Play, Pause, Loader2, Upload, MessageSquare, RotateCcw, RotateCw, Sparkles, ArrowRight, Scissors, Maximize2, Gauge, ChevronUp, ChevronRight, ChevronLeft, Download, Volume2, VolumeX, X, Image as ImageIcon, Music, Film, Mic, Camera, Trash2, Info, ArrowLeftRight, FileAudio, Captions, Type, Bold, Italic, Underline, Palette, AlignCenter, AlignLeft, AlignRight, Check, Clock, RefreshCcw, GripVertical } from 'lucide-react';
 import * as Mp4Muxer from 'mp4-muxer';
@@ -558,6 +557,145 @@ export default function App() {
       return () => window.removeEventListener('keydown', handleGlobalKeyDown);
   }, [selectedClipIds, history.present, togglePlay, handleDelete, handleUndo, handleRedo]);
 
+  // --- AI ACTION HANDLER ---
+  const handleExecuteAIAction = async (action: ToolAction) => {
+      console.log("Executing Action:", action);
+      
+      try {
+          // 1. GENERATE_VOICEOVER
+          if (action.tool_id === 'GENERATE_VOICEOVER') {
+             setIsGenerating(true);
+             
+             // STEP 1: CONTENT REFINEMENT
+             let textToSpeak = action.action_content;
+             if (!textToSpeak || textToSpeak.length < 5 || textToSpeak === action.reasoning) {
+                 console.log("Action content missing. Triggering refinement pipeline...");
+                 textToSpeak = await generateRefinement(action.reasoning, 'VOICEOVER');
+             }
+             if (!textToSpeak) textToSpeak = "Audio generation placeholder.";
+
+             // STEP 2: ASSET GENERATION
+             const audioUrl = await generateSpeech(textToSpeak, audioVoice);
+             
+             // Measure exact duration
+             const tempAudio = new Audio(audioUrl);
+             await new Promise(r => { tempAudio.onloadedmetadata = r; tempAudio.onerror = r; });
+             const exactDuration = tempAudio.duration || 5;
+
+             // STEP 3: STRUCTURAL REASONING (Placement Pipeline)
+             const placement = await determinePlacement(
+                 clips,
+                 'audio',
+                 exactDuration,
+                 action.reasoning,
+                 action.timestamp
+             );
+
+             // STEP 4: EXECUTION
+             const newClip: Clip = {
+                 id: `vo-${Math.random().toString(36).substr(2, 6)}`,
+                 title: `VO: ${textToSpeak.slice(0, 10)}...`,
+                 duration: exactDuration,
+                 startTime: placement.startTime,
+                 sourceStartTime: 0,
+                 type: 'audio',
+                 totalDuration: exactDuration,
+                 trackId: placement.trackId, 
+                 sourceUrl: audioUrl,
+                 volume: 1
+             };
+
+             setHistory(curr => {
+                 let newPresent = [...curr.present];
+                 
+                 // Apply RIPPLE Strategy: Shift clips forward
+                 if (placement.strategy === 'ripple') {
+                     const insertionPoint = placement.startTime;
+                     const shiftAmount = exactDuration;
+                     
+                     newPresent = newPresent.map(c => {
+                         // Shift all clips that start at or after the insertion point
+                         if (c.startTime >= insertionPoint) {
+                             return { ...c, startTime: c.startTime + shiftAmount };
+                         }
+                         return c;
+                     });
+                 }
+                 
+                 // Insert new clip
+                 newPresent.push(newClip);
+                 return { past: [...curr.past, curr.present], present: newPresent, future: [] };
+             });
+
+             setIsGenerating(false);
+          }
+          
+          // 2. GENERATE_TRANSITION
+          else if (action.tool_id === 'GENERATE_TRANSITION') {
+              const t = action.timestamp ?? currentTime;
+              const sortedClips = clips.filter(c => c.type === 'video' || c.type === 'image').sort((a,b) => a.startTime - b.startTime);
+              
+              let clipA = sortedClips.find(c => Math.abs((c.startTime + c.duration) - t) < 1.0);
+              let clipB = sortedClips.find(c => Math.abs(c.startTime - t) < 1.0);
+              
+              if (!clipA && !clipB && selectedClipIds.length >= 2) {
+                   const s = clips.filter(c => selectedClipIds.includes(c.id)).sort((a,b) => a.startTime - b.startTime);
+                   clipA = s[0];
+                   clipB = s[1];
+              }
+
+              if (clipA && clipB) {
+                  handleTransitionRequest(clipA, clipB);
+                  
+                  // Refinement for prompt
+                  let prompt = action.action_content;
+                  if (!prompt || prompt.length < 5) {
+                      prompt = await generateRefinement(action.reasoning, 'TRANSITION');
+                  }
+                  
+                  if (prompt) {
+                      setTransitionModal(prev => ({ ...prev, prompt: prompt! }));
+                  }
+              } else {
+                  alert("Could not identify adjacent clips for transition at this timestamp.");
+              }
+          }
+          
+          // 3. SMART_TRIM
+          else if (action.tool_id === 'SMART_TRIM') {
+              const t = action.timestamp ?? currentTime;
+              const activeClip = clips.find(c => t >= c.startTime && t < c.startTime + c.duration);
+              
+              if (activeClip) {
+                  const cutAmount = activeClip.duration * 0.1;
+                  const newDuration = activeClip.duration - (cutAmount * 2);
+                  const newStartTime = activeClip.startTime + cutAmount;
+                  const newSourceStart = activeClip.sourceStartTime + cutAmount;
+                  
+                  if (newDuration > 0.5) {
+                      setHistory(curr => {
+                          const idx = curr.present.findIndex(c => c.id === activeClip.id);
+                          if (idx === -1) return curr;
+                          const newClips = [...curr.present];
+                          newClips[idx] = {
+                              ...activeClip,
+                              startTime: newStartTime,
+                              duration: newDuration,
+                              sourceStartTime: newSourceStart
+                          };
+                          // Simple ripple for trim is harder, just modify in place for now or close gap
+                          return { past: [...curr.past, curr.present], present: newClips, future: [] };
+                      });
+                  }
+              }
+          }
+
+      } catch (e) {
+          console.error("Action Execution Failed:", e);
+          setIsGenerating(false);
+      }
+  };
+
   const captureCurrentFrame = async (): Promise<string | null> => {
       if (!containerRef.current) return null;
       const width = 1280; const height = 720;
@@ -1069,6 +1207,7 @@ export default function App() {
             timelineRange={liveScopeRange}
             allClips={clips}
             mediaRefs={mediaRefs}
+            onExecuteAction={handleExecuteAIAction}
           />
         </aside>
       </div>

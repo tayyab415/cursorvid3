@@ -1,9 +1,10 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { Wand2, Clapperboard, Sparkles, Mic, Video, Type, Zap, Loader2, Send, Clock, X } from 'lucide-react';
-import { Clip, TimelineRange, ChatMessage } from '../../types';
+import { Clip, TimelineRange, ChatMessage, ToolAction } from '../../types';
 import { chatWithGemini } from '../../services/gemini';
 import { rangeToGeminiParts } from '../../services/geminiAdapter';
+import { ChatSuggestionCard } from './ChatSuggestionCard';
 
 interface Scope {
   type: 'clip' | 'semantic' | 'range';
@@ -19,6 +20,8 @@ interface AIAssistantProps {
   // NEW PROPS FOR ADAPTER ACCESS
   allClips: Clip[];
   mediaRefs: React.MutableRefObject<{[key: string]: HTMLVideoElement | HTMLAudioElement | null}>;
+  // NEW: Handler for executed actions
+  onExecuteAction: (action: ToolAction) => void;
 }
 
 export const AIAssistant: React.FC<AIAssistantProps> = ({ 
@@ -27,7 +30,8 @@ export const AIAssistant: React.FC<AIAssistantProps> = ({
     isSelectingRange,
     timelineRange,
     allClips,
-    mediaRefs
+    mediaRefs,
+    onExecuteAction
 }) => {
   const [mode, setMode] = useState<'assist' | 'director'>('assist');
   const [assistQuery, setAssistQuery] = useState('');
@@ -88,6 +92,17 @@ export const AIAssistant: React.FC<AIAssistantProps> = ({
       }
   };
 
+  const handleApplyAction = (action: ToolAction) => {
+      // Add a system confirmation message
+      setChatHistory(prev => [...prev, { 
+          role: 'system', 
+          text: `Applying ${action.button_label}...` 
+      }]);
+      
+      // Execute Logic in Parent
+      onExecuteAction(action);
+  };
+
   const handleSendMessage = async () => {
       if (!assistQuery.trim() && !activeScope) return;
       
@@ -125,15 +140,18 @@ export const AIAssistant: React.FC<AIAssistantProps> = ({
               apiMessage = parts;
           }
 
-          const responseText = await chatWithGemini(
+          const response = await chatWithGemini(
               // IMPORTANT: Pass chatHistory (previous turns) only.
               // The SDK will append the new `apiMessage` as the current turn.
-              // If we passed `newHistory`, we would duplicate the current message (once as text, once as payload).
               chatHistory.map(m => ({ role: m.role, text: m.text })), 
               apiMessage
           );
 
-          setChatHistory(prev => [...prev, { role: 'model', text: responseText }]);
+          setChatHistory(prev => [...prev, { 
+              role: 'model', 
+              text: response.text, 
+              toolAction: response.toolAction 
+          }]);
       } catch (e) {
           console.error(e);
           setChatHistory(prev => [...prev, { role: 'model', text: "Sorry, I had trouble analyzing that." }]);
@@ -212,10 +230,20 @@ export const AIAssistant: React.FC<AIAssistantProps> = ({
             {chatHistory.length > 0 ? (
                 <div className="space-y-4 mb-4">
                     {chatHistory.map((msg, i) => (
-                        <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                        <div key={i} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
                             <div className={`max-w-[85%] p-3 rounded-lg text-xs leading-relaxed ${msg.role === 'user' ? 'bg-blue-600/20 text-blue-100 border border-blue-500/30' : 'bg-neutral-800 border border-neutral-700'}`}>
                                 {msg.text}
                             </div>
+                            
+                            {/* Render Structured Tool Action Widget if present */}
+                            {msg.toolAction && (
+                                <div className="w-[85%]">
+                                    <ChatSuggestionCard 
+                                        action={msg.toolAction} 
+                                        onApply={handleApplyAction} 
+                                    />
+                                </div>
+                            )}
                         </div>
                     ))}
                     {isProcessing && (

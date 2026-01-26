@@ -1,6 +1,6 @@
 
-import { GoogleGenAI, Type, Modality } from "@google/genai";
-import { Clip, Suggestion } from "../types";
+import { GoogleGenAI, Type, Modality, FunctionDeclaration } from "@google/genai";
+import { Clip, Suggestion, ToolAction, PlacementDecision } from "../types";
 
 const getAiClient = () => {
   const apiKey = process.env.API_KEY;
@@ -63,10 +63,43 @@ const base64ToUint8Array = (base64: string) => {
 
 // --- API CALLS ---
 
+// Define the Tool Schema for the Action-First Agent
+const suggestActionTool: FunctionDeclaration = {
+  name: 'suggest_ai_action',
+  description: 'Propose an executable editing action to the user.',
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      tool_id: {
+        type: Type.STRING,
+        enum: ['GENERATE_TRANSITION', 'GENERATE_VOICEOVER', 'SMART_TRIM'],
+        description: 'The specific action ID to execute.'
+      },
+      button_label: {
+        type: Type.STRING,
+        description: 'Short, punchy label for the action button (e.g. "Fix Transition").'
+      },
+      reasoning: {
+        type: Type.STRING,
+        description: 'Brief explanation (under 10 words) of why this action improves the video.'
+      },
+      timestamp: {
+        type: Type.NUMBER,
+        description: 'Optional timestamp in seconds where the action should apply.'
+      },
+      action_content: {
+          type: Type.STRING,
+          description: 'CRITICAL: The script for VOICEOVER or the prompt for TRANSITION. Must be fully written out.'
+      }
+    },
+    required: ['tool_id', 'button_label', 'reasoning']
+  }
+};
+
 export const chatWithGemini = async (
     history: { role: 'user' | 'model' | 'system', text?: string, parts?: any[] }[],
     message: string | any[]
-): Promise<string> => {
+): Promise<{ text: string, toolAction?: ToolAction }> => {
     const ai = getAiClient();
     
     // Normalize history to the API format
@@ -79,32 +112,211 @@ export const chatWithGemini = async (
             return { role: msg.role as 'user' | 'model', parts: [{ text: msg.text || '' }] };
         });
 
+    const systemInstruction = `
+You are an ACTION-FIRST Video Editor Agent.
+
+You are NOT a general video critic.
+You are NOT allowed to end with questions.
+You exist to propose executable edits.
+
+========================
+WHAT YOU ARE CONNECTED TO
+========================
+- A video editor that can execute suggested actions via clickable buttons.
+- You can ONLY act by calling the tool \`suggest_ai_action\`.
+- If no tool is proposed, your response is considered a FAILURE.
+
+========================
+HOW YOU MUST THINK
+========================
+For every user message:
+1. Analyze the clip or range.
+2. Identify at least ONE concrete improvement.
+3. Convert that improvement into an ACTION.
+
+If multiple improvements exist:
+- Propose 1–3 actions maximum.
+- Prefer GENERATIVE actions when possible.
+
+========================
+AVAILABLE ACTIONS
+========================
+You can ONLY suggest these actions:
+
+1. GENERATE_TRANSITION  
+   Use when pacing, scene change, or visual continuity is weak.
+   CRITICAL: You MUST provide a visual prompt in 'action_content'.
+   Example: action_content: "A futuristic glitch transition blurring into the next scene"
+
+2. GENERATE_VOICEOVER  
+   Use when context, explanation, or engagement is missing.
+   CRITICAL: You MUST write the exact Voiceover Script in 'action_content'.
+   Example: action_content: "Welcome to the grand finals. The stakes have never been higher."
+
+3. SMART_TRIM  
+   Use when pacing is slow, static, or contains silence.
+
+========================
+STRICT OUTPUT RULES
+========================
+- You MUST call \`suggest_ai_action\` at least once.
+- Do NOT ask the user questions.
+- Do NOT give editing tutorials.
+- Text response must be under 15 words.
+- If you mention an improvement, it MUST appear as a suggestion button.
+
+If no action applies, choose the closest one and adapt it.
+    `;
+
     const chat = ai.chats.create({
         model: 'gemini-3-flash-preview',
         history: apiHistory,
         config: {
-            systemInstruction: "You are an intelligent video editing assistant. You help users navigate the editor, suggest creative ideas, and analyze video content. When provided with timeline ranges, analyze the visual and audio content to give specific advice.",
+            systemInstruction: systemInstruction,
+            tools: [{ functionDeclarations: [suggestActionTool] }],
         }
     });
 
     try {
-        // If message is a complex array (multimodal), pass it directly to parts
-        // If it's a string, wrap in parts object (Note: SDK behavior)
         let msgPayload;
         if (typeof message === 'string') {
             msgPayload = { message };
         } else {
-             // For multimodal, we construct a message object with parts
-             // BUT sdk `sendMessage` takes `message: string | Part[] | ...`
-             // Checking SDK types, sendMessage takes `message: string | Array<string | Part>`
              msgPayload = { message: message };
         }
         
         const result = await chat.sendMessage(msgPayload);
-        return result.text;
+        
+        let toolAction: ToolAction | undefined;
+
+        // Parse Function Call
+        if (result.functionCalls && result.functionCalls.length > 0) {
+            const call = result.functionCalls[0];
+            if (call.name === 'suggest_ai_action') {
+                const args = call.args as any;
+                toolAction = {
+                    tool_id: args.tool_id,
+                    button_label: args.button_label,
+                    reasoning: args.reasoning,
+                    timestamp: args.timestamp,
+                    action_content: args.action_content,
+                    parameters: args.parameters
+                };
+            }
+        }
+
+        // Return text + optional tool action
+        const textResponse = result.text || (toolAction ? "Here is a suggested action:" : "");
+
+        return { 
+            text: textResponse, 
+            toolAction: toolAction 
+        };
+
     } catch (e: any) {
         console.error("Chat Error:", e);
-        return "Sorry, I encountered an error communicating with the AI.";
+        return { text: "Sorry, I encountered an error communicating with the AI." };
+    }
+};
+
+/**
+ * PIPELINE STEP 2: REFINEMENT
+ */
+export const generateRefinement = async (
+    originalContext: string,
+    toolType: 'VOICEOVER' | 'TRANSITION'
+): Promise<string> => {
+    const ai = getAiClient();
+    const prompt = toolType === 'VOICEOVER'
+        ? `You previously suggested a voiceover with this reasoning: "${originalContext}". Write a short, engaging, professional script (max 2 sentences) for this voiceover. Return ONLY the raw text to be spoken. Do not include quotes or labels.`
+        : `You previously suggested a video transition with this reasoning: "${originalContext}". Write a highly detailed visual prompt for an AI video generator to create this transition. Return ONLY the raw prompt text.`;
+    
+    try {
+        const response = await ai.models.generateContent({
+            model: 'gemini-3-flash-preview',
+            contents: { parts: [{ text: prompt }] }
+        });
+        return response.text?.trim() || (toolType === 'VOICEOVER' ? "Voiceover content unavailable." : "Cinematic transition");
+    } catch (e) {
+        console.error("Refinement Error:", e);
+        return toolType === 'VOICEOVER' ? "Voiceover generation failed." : "Standard transition";
+    }
+};
+
+/**
+ * PIPELINE STEP 3: STRUCTURAL REASONING
+ * Determines WHERE to put the generated asset and HOW to restructure the timeline.
+ */
+export const determinePlacement = async (
+    currentClips: Clip[],
+    assetType: 'audio' | 'video',
+    assetDuration: number,
+    intentReasoning: string,
+    proposedTimestamp?: number
+): Promise<PlacementDecision> => {
+    const ai = getAiClient();
+    
+    // Filter relevant clips for context
+    const simplifiedTimeline = currentClips.map(c => ({
+        id: c.id,
+        type: c.type,
+        start: c.startTime,
+        duration: c.duration,
+        end: c.startTime + c.duration,
+        track: c.trackId
+    })).sort((a,b) => a.start - b.start);
+
+    const prompt = `
+    You are a Structural Video Editor.
+    
+    CONTEXT:
+    The user is adding a new ${assetType} clip (Duration: ${assetDuration.toFixed(2)}s).
+    Reason for add: "${intentReasoning}".
+    Proposed Timestamp: ${proposedTimestamp ?? 'None (Decide based on intent)'}.
+    
+    CURRENT TIMELINE:
+    ${JSON.stringify(simplifiedTimeline, null, 2)}
+    
+    TASK:
+    Decide the optimal placement strategy.
+    
+    RULES:
+    1. 'ripple': Use this for INTROS, INSERTIONS, or when adding new scenes. It pushes existing clips forward.
+    2. 'overlay': Use this for COMMENTARY, BACKGROUND MUSIC, or SOUND EFFECTS. It places audio on top without moving video.
+    3. 'replace': Use this if replacing a specific placeholder.
+    
+    If 'intent' mentions "Intro", you MUST start at 0 and use 'ripple'.
+    If 'intent' mentions "Transition", place it between clips using 'ripple' or 'overlay' depending on style.
+    
+    OUTPUT:
+    Return ONLY a JSON object:
+    {
+      "strategy": "ripple" | "overlay" | "replace",
+      "startTime": number,
+      "trackId": number (Use 0 for audio, 1+ for video),
+      "reasoning": "string explanation"
+    }
+    `;
+
+    try {
+        const response = await ai.models.generateContent({
+            model: "gemini-3-flash-preview", // Fast reasoning
+            contents: { parts: [{ text: prompt }] },
+            config: { responseMimeType: "application/json" }
+        });
+        
+        const text = response.text || "{}";
+        const cleanText = text.replace(/```json|```/g, '').trim();
+        return JSON.parse(cleanText) as PlacementDecision;
+    } catch (e) {
+        console.error("Structural Reasoning Error:", e);
+        // Fallback
+        return {
+            strategy: 'overlay',
+            startTime: proposedTimestamp || 0,
+            trackId: assetType === 'audio' ? 0 : 1,
+            reasoning: "Fallback placement due to error."
+        };
     }
 };
 

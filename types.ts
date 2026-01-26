@@ -44,10 +44,21 @@ export interface Suggestion {
   clips: Clip[];
 }
 
+// Contract for Gemini Tool Calls ("suggest_ai_action")
+export interface ToolAction {
+  tool_id: "GENERATE_TRANSITION" | "GENERATE_VOICEOVER" | "SMART_TRIM";
+  button_label: string;
+  reasoning: string;
+  timestamp?: number;
+  action_content?: string; // The script for VO, or prompt for transition
+  parameters?: any;
+}
+
 export interface ChatMessage {
   role: 'user' | 'model' | 'system';
   text: string;
   suggestions?: Suggestion[];
+  toolAction?: ToolAction; // Support for structured tool widgets
 }
 
 // NEW: Editor Truth for a selection
@@ -58,4 +69,12 @@ export interface TimelineRange {
     id: number;
     clips: Clip[]; // Only clips intersecting this range
   }[];
+}
+
+// NEW: Response from the Structural Reasoning Agent
+export interface PlacementDecision {
+  strategy: 'ripple' | 'overlay' | 'replace';
+  startTime: number;
+  trackId: number;
+  reasoning: string;
 }
