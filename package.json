@@ -13,7 +13,7 @@
     "react": "^19.2.3",
     "@google/genai": "^1.37.0",
     "lucide-react": "^0.562.0",
-    "mp4-muxer": "5.1.0"
+    "mp4-muxer": "^5.2.2"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",

@@ -60,7 +60,7 @@ const createEditPlanTool: FunctionDeclaration = {
 
 const editTimelineTool: FunctionDeclaration = {
     name: 'edit_timeline_state',
-    description: 'Directly modify the timeline structure: move clips, change volume, delete clips, or trim duration. Use this for FIXING issues (overlap, silence, pacing).',
+    description: 'Directly modify the timeline structure: move clips, change volume, delete clips, or trim duration. Use this for FIXING issues (overlap, silence, pacing) or REFINING existing elements.',
     parameters: {
         type: Type.OBJECT,
         properties: {
@@ -267,42 +267,41 @@ export const performDeepAnalysis = async (mediaParts: any[]): Promise<string> =>
 };
 
 /**
- * VERIFICATION LAYER
- * Checks if the executed plan actually achieved the goal.
+ * METADATA VERIFICATION LAYER
+ * Quick structural check after an action.
  */
-export const verifyTimelineState = async (mediaParts: any[], goal: string): Promise<string> => {
-     const ai = getAiClient();
-     
-     const systemPrompt = `
-     ROLE: Quality Assurance / Verification Engine.
-     TASK: You are looking at the FINAL STATE of a video timeline after edits. Compare it against the USER GOAL.
-     
-     USER GOAL: "${goal}"
-     
-     INSTRUCTIONS:
-     1. Analyze the audio and visuals provided.
-     2. Does the video now meet the goal? 
-     3. Be critical. If there is still overlap, silence, or bad pacing, say so.
-     4. Start with "VERIFICATION RESULT: [SUCCESS/PARTIAL/FAIL]".
-     5. Provide a short 1-sentence explanation.
-     `;
+export const verifyActionOutcome = async (step: PlanStep, currentClips: Clip[]): Promise<string> => {
+    const ai = getAiClient();
+    const prompt = `
+    ROLE: Independent Timeline Verifier.
+    GOAL: Check if a specific editing action was successfully applied to the timeline.
 
-     try {
-         const response = await ai.models.generateContent({
-             model: 'gemini-3-pro-preview',
-             contents: {
-                 role: 'user',
-                 parts: [
-                     ...mediaParts,
-                     { text: "Verify if the timeline meets the goal." }
-                 ]
-             },
-             config: { systemInstruction: systemPrompt }
-         });
-         return response.text || "Verification failed.";
-     } catch (e) {
-         return "Verification system error.";
-     }
+    ORIGINAL INTENT: "${step.intent}"
+    REASONING: "${step.reasoning}"
+
+    CURRENT TIMELINE STATE (Metadata):
+    ${JSON.stringify(currentClips.map(c => ({
+        id: c.id, type: c.type, start: c.startTime.toFixed(2), end: (c.startTime+c.duration).toFixed(2), title: c.title, track: c.trackId
+    })))}
+
+    INSTRUCTIONS:
+    1. Analyze the timeline metadata.
+    2. Did the action happen? (e.g. if intent was "Add voiceover", is there a new audio clip? If "Delete", is it gone?)
+    3. Are there obvious issues? (e.g. overlapping voiceovers, gaps).
+    4. Return a concise status report (1-2 sentences). Start with "VERIFIED:" or "ISSUE:".
+    `;
+
+    try {
+        const response = await ai.models.generateContent({
+            model: 'gemini-3-flash-preview',
+            contents: { parts: [{ text: prompt }] },
+            config: { systemInstruction: "You are a factual verification engine." }
+        });
+        return response.text?.trim() || "Verification unavailable.";
+    } catch (e) {
+        console.error("Verification Error:", e);
+        return "Verification check failed.";
+    }
 }
 
 /**
@@ -328,15 +327,18 @@ export const resolvePlanStep = async (step: PlanStep, timelineContext: string): 
 
     AVAILABLE TOOLS:
     1. EDIT_TIMELINE_STATE (tool_id: "EDIT_TIMELINE")
-       - **PRIORITY**: Use this for FIXING things (e.g. "Fix overlap", "Lower volume", "Delete clip", "Move clip").
-       - You MUST provide specific 'clipId's from the Timeline Data.
+       - **PRIORITY**: Use this for ANY request that implies "Change", "Fix", "Move", "Remove", "Adjust", "Trim", "Volume".
+       - You MUST find the RELEVANT 'clipId' in the Timeline Data.
+       - Do NOT generate NEW clips if the goal is to modify existing ones.
        - Operations: 'move', 'trim', 'volume', 'delete'.
        
     2. GENERATE_VOICEOVER (tool_id: "GENERATE_VOICEOVER")
-       - Only use if a NEW voiceover is explicitly requested. Do not use to "fix" an existing one.
+       - Use ONLY if the intent is explicitly to CREATE a NEW voiceover.
+       - Do NOT use to "fix" an existing voiceover (use EDIT_TIMELINE instead).
        - Parameter 'action_content': WRITE THE FULL SCRIPT.
     
     3. GENERATE_TRANSITION (tool_id: "GENERATE_TRANSITION")
+       - Use to insert a NEW transition between clips.
        - Parameter 'action_content': WRITE A VISUAL PROMPT.
        
     4. SMART_TRIM (tool_id: "SMART_TRIM")
@@ -344,7 +346,7 @@ export const resolvePlanStep = async (step: PlanStep, timelineContext: string): 
 
     INSTRUCTIONS:
     - Analyze the intent.
-    - If the goal is to "Fix overlap", "Adjust volume", or "Remove", YOU MUST USE 'EDIT_TIMELINE_STATE' targeting the specific clip IDs involved in the conflict.
+    - If the goal is "Fix overlap", "Adjust volume", or "Remove", YOU MUST USE 'EDIT_TIMELINE_STATE' targeting the specific clip IDs.
     - Call 'suggest_ai_action' (wrapper) or 'edit_timeline_state'.
     `;
 

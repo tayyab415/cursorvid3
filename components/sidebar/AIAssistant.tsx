@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Wand2, Clapperboard, Sparkles, Mic, Video, Type, Zap, Loader2, Send, Clock, X, Check, Target, AlertTriangle } from 'lucide-react';
 import { Clip, TimelineRange, ChatMessage, ToolAction, PlanStep, VideoIntent } from '../../types';
-import { chatWithGemini, resolvePlanStep, performDeepAnalysis } from '../../services/gemini';
+import { chatWithGemini, resolvePlanStep, performDeepAnalysis, verifyActionOutcome } from '../../services/gemini';
 import { rangeToGeminiParts } from '../../services/geminiAdapter';
 import { ChatSuggestionCard } from './ChatSuggestionCard';
 import { PlanReviewCard } from './PlanReviewCard';
@@ -20,6 +20,7 @@ interface AIAssistantProps {
   timelineRange: { start: number, end: number } | null;
   allClips: Clip[];
   mediaRefs: React.MutableRefObject<{[key: string]: HTMLVideoElement | HTMLAudioElement | null}>;
+  clipsRef: React.MutableRefObject<Clip[]>; // New ref for accessing fresh state
   onExecuteAction: (action: ToolAction) => Promise<void>;
 }
 
@@ -30,6 +31,7 @@ export const AIAssistant: React.FC<AIAssistantProps> = ({
     timelineRange,
     allClips,
     mediaRefs,
+    clipsRef,
     onExecuteAction
 }) => {
   const [mode, setMode] = useState<'assist' | 'director'>('assist');
@@ -71,13 +73,7 @@ export const AIAssistant: React.FC<AIAssistantProps> = ({
 
   const handleExecutePlan = async (steps: PlanStep[]) => {
       setIsProcessing(true);
-      const timelineContext = JSON.stringify(allClips.map(c => ({
-          title: c.title,
-          type: c.type,
-          startTime: c.startTime,
-          duration: c.duration
-      })));
-
+      
       setChatHistory(prev => [...prev, { 
         role: 'system', 
         text: `Orchestrating ${steps.length} approved steps autonomously...` 
@@ -91,12 +87,36 @@ export const AIAssistant: React.FC<AIAssistantProps> = ({
           setExecutionStatus(`Executing Step ${i + 1}/${steps.length}: ${step.intent}`);
           
           try {
-              // 1. Convert Plan Step to Concrete Tool Action using Gemini
+              // 1. Get Fresh Timeline Context from Ref (CRITICAL for loop)
+              const currentClips = clipsRef.current;
+              const timelineContext = JSON.stringify(currentClips.map(c => ({
+                  id: c.id,
+                  title: c.title,
+                  type: c.type,
+                  startTime: c.startTime,
+                  duration: c.duration,
+                  trackId: c.trackId
+              })));
+
+              // 2. Convert Plan Step to Concrete Tool Action
               const toolAction = await resolvePlanStep(step, timelineContext);
               
               if (toolAction) {
-                  // 2. Execute Action (Generate content + Mutate timeline)
+                  // 3. Execute Action
                   await onExecuteAction(toolAction);
+                  
+                  // 4. Verification Pause (Wait for React State propagation)
+                  await new Promise(r => setTimeout(r, 600));
+                  
+                  // 5. Verify Outcome using FRESH state
+                  const postEditClips = clipsRef.current;
+                  const verificationResult = await verifyActionOutcome(step, postEditClips);
+                  
+                  setChatHistory(prev => [...prev, { 
+                      role: 'system', 
+                      text: `[Step ${i+1}] ${verificationResult}` 
+                  }]);
+
                   successCount++;
               } else {
                   throw new Error("Could not determine technical action for this step.");
