@@ -182,8 +182,10 @@ export const rangeToGeminiParts = async (
     // This allows Gemini to see text overlays, images, and layout.
     
     const duration = range.end - range.start;
-    // Capture up to 3 frames depending on duration
-    const frameCount = duration > 5 ? 3 : (duration > 2 ? 2 : 1);
+    // Dynamic sampling: ~1 frame every 5 seconds, min 1, max 8.
+    let frameCount = Math.min(Math.ceil(duration / 5), 8);
+    if (frameCount < 1) frameCount = 1;
+    
     const step = duration / (frameCount + 1);
     
     const sampleTimes: number[] = [];

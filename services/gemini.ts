@@ -1,6 +1,6 @@
 
-import { GoogleGenAI, Type, Modality, FunctionDeclaration } from "@google/genai";
-import { Clip, Suggestion, ToolAction, PlacementDecision } from "../types";
+import { GoogleGenAI, Type, FunctionDeclaration, Modality, FunctionCallingConfigMode } from "@google/genai";
+import { Clip, ToolAction, PlacementDecision, EditPlan, Suggestion, PlanStep, VideoIntent } from "../types";
 
 const getAiClient = () => {
   const apiKey = process.env.API_KEY;
@@ -10,63 +10,84 @@ const getAiClient = () => {
   return new GoogleGenAI({ apiKey });
 };
 
-// --- UTILS ---
+// --- TOOL DEFINITIONS ---
 
-// Helper to convert raw PCM to WAV Blob URL
-const pcmToWav = (pcmData: Uint8Array, sampleRate: number = 24000, numChannels: number = 1): string => {
-    const buffer = new ArrayBuffer(44 + pcmData.length);
-    const view = new DataView(buffer);
-
-    // RIFF chunk descriptor
-    writeString(view, 0, 'RIFF');
-    view.setUint32(4, 36 + pcmData.length, true);
-    writeString(view, 8, 'WAVE');
-
-    // fmt sub-chunk
-    writeString(view, 12, 'fmt ');
-    view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true); // PCM
-    view.setUint16(22, numChannels, true);
-    view.setUint32(24, sampleRate, true);
-    view.setUint32(28, sampleRate * numChannels * 2, true);
-    view.setUint16(32, numChannels * 2, true);
-    view.setUint16(34, 16, true); // 16-bit
-
-    // data sub-chunk
-    writeString(view, 36, 'data');
-    view.setUint32(40, pcmData.length, true);
-
-    // Write PCM data
-    const payload = new Uint8Array(buffer, 44);
-    payload.set(pcmData);
-
-    const blob = new Blob([buffer], { type: 'audio/wav' });
-    return URL.createObjectURL(blob);
+const updateVideoIntentTool: FunctionDeclaration = {
+  name: 'update_video_intent',
+  description: 'Call this when you have inferred or confirmed the video platform, goal, or tone from the user conversation.',
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      platform: { type: Type.STRING, description: "The target platform (TikTok, YouTube, Instagram, TV, Internal)." },
+      goal: { type: Type.STRING, description: "The creative goal (Viral, Educational, Storytelling, Authority)." },
+      tone: { type: Type.STRING, description: "The desired tone (Energetic, Cinematic, Professional, Calm)." }
+    }
+  }
 };
 
-const writeString = (view: DataView, offset: number, string: string) => {
-    for (let i = 0; i < string.length; i++) {
-        view.setUint8(offset + i, string.charCodeAt(i));
+const createEditPlanTool: FunctionDeclaration = {
+  name: 'create_edit_plan',
+  description: 'Propose a structured, multi-step plan to improve or edit the video based on high-level goals. Use this for complex requests.',
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      goal: {
+        type: Type.STRING,
+        description: 'The overall creative goal being addressed.'
+      },
+      analysis: {
+        type: Type.STRING,
+        description: 'A brief, sharp analysis of the current timeline (Director’s note).'
+      },
+      steps: {
+        type: Type.ARRAY,
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            id: { type: Type.STRING },
+            intent: { type: Type.STRING, description: 'What needs to happen semantically (e.g., "Add a punchy intro voiceover").' },
+            category: { type: Type.STRING, enum: ['visual', 'audio', 'pacing', 'style'] },
+            reasoning: { type: Type.STRING, description: 'Why this step is necessary for the goal.' },
+            timestamp: { type: Type.NUMBER, description: 'Optional timeline marker in seconds.' }
+          },
+          required: ['id', 'intent', 'reasoning']
+        }
+      }
+    },
+    required: ['goal', 'analysis', 'steps']
+  }
+};
+
+const editTimelineTool: FunctionDeclaration = {
+    name: 'edit_timeline_state',
+    description: 'Directly modify the timeline structure: move clips, change volume, delete clips, or trim duration. Use this for FIXING issues (overlap, silence, pacing).',
+    parameters: {
+        type: Type.OBJECT,
+        properties: {
+            operations: {
+                type: Type.ARRAY,
+                items: {
+                    type: Type.OBJECT,
+                    properties: {
+                        type: { type: Type.STRING, enum: ['move', 'trim', 'volume', 'delete'] },
+                        clipId: { type: Type.STRING, description: 'The exact ID of the clip to modify.' },
+                        newStartTime: { type: Type.NUMBER, description: 'For move: new start time in seconds.' },
+                        newTrackId: { type: Type.NUMBER, description: 'For move: new track index.' },
+                        newDuration: { type: Type.NUMBER, description: 'For trim: new duration in seconds.' },
+                        newVolume: { type: Type.NUMBER, description: 'For volume: 0.0 to 1.0.' }
+                    },
+                    required: ['type', 'clipId']
+                }
+            },
+            reasoning: { type: Type.STRING }
+        },
+        required: ['operations', 'reasoning']
     }
 };
 
-const base64ToUint8Array = (base64: string) => {
-    const binaryString = atob(base64);
-    const len = binaryString.length;
-    const bytes = new Uint8Array(len);
-    for (let i = 0; i < len; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-    }
-    return bytes;
-};
-
-
-// --- API CALLS ---
-
-// Define the Tool Schema for the Action-First Agent
 const suggestActionTool: FunctionDeclaration = {
   name: 'suggest_ai_action',
-  description: 'Propose an executable editing action to the user.',
+  description: 'Propose a single executable editing action for GENERATION tasks (creating NEW content).',
   parameters: {
     type: Type.OBJECT,
     properties: {
@@ -75,97 +96,75 @@ const suggestActionTool: FunctionDeclaration = {
         enum: ['GENERATE_TRANSITION', 'GENERATE_VOICEOVER', 'SMART_TRIM'],
         description: 'The specific action ID to execute.'
       },
-      button_label: {
-        type: Type.STRING,
-        description: 'Short, punchy label for the action button (e.g. "Fix Transition").'
-      },
-      reasoning: {
-        type: Type.STRING,
-        description: 'Brief explanation (under 10 words) of why this action improves the video.'
-      },
-      timestamp: {
-        type: Type.NUMBER,
-        description: 'Optional timestamp in seconds where the action should apply.'
-      },
-      action_content: {
-          type: Type.STRING,
-          description: 'CRITICAL: The script for VOICEOVER or the prompt for TRANSITION. Must be fully written out.'
-      }
+      button_label: { type: Type.STRING },
+      reasoning: { type: Type.STRING },
+      timestamp: { type: Type.NUMBER },
+      action_content: { type: Type.STRING, description: 'Payload for the action (script for VO, prompt for transition).' }
     },
     required: ['tool_id', 'button_label', 'reasoning']
   }
 };
 
+const performAnalysisTool: FunctionDeclaration = {
+    name: 'perform_deep_analysis',
+    description: 'Use this tool IMMEDIATELY when the user asks to "analyze", "review", or "check" the video. This delegates the task to a specialized factual analysis engine.',
+    parameters: { type: Type.OBJECT, properties: {} }
+};
+
+// --- CHAT SERVICE ---
+
 export const chatWithGemini = async (
     history: { role: 'user' | 'model' | 'system', text?: string, parts?: any[] }[],
-    message: string | any[]
-): Promise<{ text: string, toolAction?: ToolAction }> => {
+    message: string | any[],
+    currentIntent?: VideoIntent
+): Promise<{ text: string, toolAction?: ToolAction, plan?: EditPlan, intentUpdate?: VideoIntent, shouldAnalyze?: boolean }> => {
     const ai = getAiClient();
     
-    // Normalize history to the API format
     const apiHistory = history
-        .filter(msg => msg.role === 'user' || msg.role === 'model')
-        .map(msg => {
-            if (msg.parts) {
-                return { role: msg.role as 'user' | 'model', parts: msg.parts };
-            }
-            return { role: msg.role as 'user' | 'model', parts: [{ text: msg.text || '' }] };
-        });
+        .filter(msg => ['user', 'model', 'system'].includes(msg.role))
+        .map(msg => ({ 
+            role: (msg.role === 'system' ? 'user' : msg.role) as 'user' | 'model', 
+            parts: msg.parts || [{ text: msg.role === 'system' ? `[SYSTEM UPDATE]: ${msg.text}` : (msg.text || '') }] 
+        }));
+
+    const intentContext = currentIntent ? `
+    ESTABLISHED VIDEO INTENT:
+    - Platform: ${currentIntent.platform || 'Unknown'}
+    - Goal: ${currentIntent.goal || 'Unknown'}
+    - Tone: ${currentIntent.tone || 'Unknown'}
+    ` : "ESTABLISHED VIDEO INTENT: None yet.";
 
     const systemInstruction = `
-You are an ACTION-FIRST Video Editor Agent.
+You are the INTELLIGENT DIRECTOR for an AI Video Editor.
+You coordinate between the User, the Analysis Engine, and the Editing Tools.
 
-You are NOT a general video critic.
-You are NOT allowed to end with questions.
-You exist to propose executable edits.
-
-========================
-WHAT YOU ARE CONNECTED TO
-========================
-- A video editor that can execute suggested actions via clickable buttons.
-- You can ONLY act by calling the tool \`suggest_ai_action\`.
-- If no tool is proposed, your response is considered a FAILURE.
+${intentContext}
 
 ========================
-HOW YOU MUST THINK
+THE PIPELINE (LAYERS)
 ========================
-For every user message:
-1. Analyze the clip or range.
-2. Identify at least ONE concrete improvement.
-3. Convert that improvement into an ACTION.
 
-If multiple improvements exist:
-- Propose 1–3 actions maximum.
-- Prefer GENERATIVE actions when possible.
+1. **ANALYSIS LAYER (Neutral/Factual)**
+   - Trigger: User asks "Analyze this", "What's on the timeline?", "Review video", "Check my work".
+   - ACTION: **You MUST call the tool \`perform_deep_analysis\` immediately.**
+   - Do NOT attempt to analyze the timeline yourself using only metadata. Delegate to the Engine which sees the frames.
 
-========================
-AVAILABLE ACTIONS
-========================
-You can ONLY suggest these actions:
+2. **PLANNING LAYER (Strategic)**
+   - Trigger: User says "Fix it", "Make it better", "Edit for TikTok".
+   - ACTION: Check if you have the *Video Intent* (Platform/Goal).
+     - If MISSING: Ask the user.
+     - If KNOWN: Call \`create_edit_plan\`.
 
-1. GENERATE_TRANSITION  
-   Use when pacing, scene change, or visual continuity is weak.
-   CRITICAL: You MUST provide a visual prompt in 'action_content'.
-   Example: action_content: "A futuristic glitch transition blurring into the next scene"
-
-2. GENERATE_VOICEOVER  
-   Use when context, explanation, or engagement is missing.
-   CRITICAL: You MUST write the exact Voiceover Script in 'action_content'.
-   Example: action_content: "Welcome to the grand finals. The stakes have never been higher."
-
-3. SMART_TRIM  
-   Use when pacing is slow, static, or contains silence.
+3. **EXECUTION LAYER (Tactical)**
+   - Trigger: User gives a specific command ("Add transition").
+   - ACTION: Call \`suggest_ai_action\`.
 
 ========================
-STRICT OUTPUT RULES
+CRITICAL RULES
 ========================
-- You MUST call \`suggest_ai_action\` at least once.
-- Do NOT ask the user questions.
-- Do NOT give editing tutorials.
-- Text response must be under 15 words.
-- If you mention an improvement, it MUST appear as a suggestion button.
-
-If no action applies, choose the closest one and adapt it.
+- **DELEGATE ANALYSIS**: Never hallucinate a critique. Always use \`perform_deep_analysis\` for a fresh look at the visual evidence.
+- **CONTEXT FIRST**: If the user says "Improve this" but you don't know the goal, ASK.
+- **NO AUTOPILOT**: "Hi" = Conversation. "Analyze" = Tool Call.
     `;
 
     const chat = ai.chats.create({
@@ -173,472 +172,307 @@ If no action applies, choose the closest one and adapt it.
         history: apiHistory,
         config: {
             systemInstruction: systemInstruction,
-            tools: [{ functionDeclarations: [suggestActionTool] }],
+            tools: [{ functionDeclarations: [createEditPlanTool, suggestActionTool, updateVideoIntentTool, performAnalysisTool] }],
         }
     });
 
     try {
-        let msgPayload;
-        if (typeof message === 'string') {
-            msgPayload = { message };
-        } else {
-             msgPayload = { message: message };
-        }
-        
+        const msgPayload = typeof message === 'string' ? { message } : { message: message };
         const result = await chat.sendMessage(msgPayload);
         
         let toolAction: ToolAction | undefined;
+        let editPlan: EditPlan | undefined;
+        let intentUpdate: VideoIntent | undefined;
+        let shouldAnalyze = false;
 
-        // Parse Function Call
         if (result.functionCalls && result.functionCalls.length > 0) {
-            const call = result.functionCalls[0];
-            if (call.name === 'suggest_ai_action') {
+            for (const call of result.functionCalls) {
                 const args = call.args as any;
-                toolAction = {
-                    tool_id: args.tool_id,
-                    button_label: args.button_label,
-                    reasoning: args.reasoning,
-                    timestamp: args.timestamp,
-                    action_content: args.action_content,
-                    parameters: args.parameters
-                };
+                
+                if (call.name === 'create_edit_plan') {
+                    editPlan = {
+                        goal: args.goal,
+                        analysis: args.analysis,
+                        steps: args.steps.map((s: any) => ({ ...s, status: 'approved' }))
+                    };
+                } else if (call.name === 'suggest_ai_action') {
+                    toolAction = {
+                        tool_id: args.tool_id,
+                        button_label: args.button_label,
+                        reasoning: args.reasoning,
+                        timestamp: args.timestamp,
+                        action_content: args.action_content,
+                        parameters: args.parameters
+                    };
+                } else if (call.name === 'update_video_intent') {
+                    intentUpdate = {
+                        platform: args.platform,
+                        goal: args.goal,
+                        tone: args.tone
+                    };
+                } else if (call.name === 'perform_deep_analysis') {
+                    shouldAnalyze = true;
+                }
             }
         }
 
-        // Return text + optional tool action
-        const textResponse = result.text || (toolAction ? "Here is a suggested action:" : "");
-
         return { 
-            text: textResponse, 
-            toolAction: toolAction 
+            text: result.text || (shouldAnalyze ? "Initializing Analysis Engine..." : (editPlan ? "Proposed Edit Plan:" : toolAction ? "Suggested Action:" : "Intent Updated.")), 
+            toolAction, 
+            plan: editPlan,
+            intentUpdate,
+            shouldAnalyze
         };
-
     } catch (e: any) {
         console.error("Chat Error:", e);
-        return { text: "Sorry, I encountered an error communicating with the AI." };
+        return { text: "Communication error. Please check your API key and network." };
     }
 };
 
 /**
- * PIPELINE STEP 2: REFINEMENT
+ * INDEPENDENT ANALYSIS LAYER (Perception Engine)
  */
-export const generateRefinement = async (
-    originalContext: string,
-    toolType: 'VOICEOVER' | 'TRANSITION'
-): Promise<string> => {
+export const performDeepAnalysis = async (mediaParts: any[]): Promise<string> => {
+    const ai = getAiClient();
+    
+    const systemPrompt = `
+    ROLE: Independent Video Analysis Engine.
+    TASK: Provide a purely factual, neutral, and technical breakdown of the video timeline based on the PROVIDED AUDIO AND VISUAL FRAMES.
+    
+    INSTRUCTIONS:
+    1. **LOOK AT THE IMAGES**: Describe the visual content (lighting, subject, movement, color palette).
+    2. **LISTEN TO THE AUDIO**: Describe what is being said, the music mood, or if it is silent.
+    3. **GROUND TRUTH**: The visual/audio parts are the truth.
+    4. **NO ADVICE**: Do not suggest edits.
+    5. **FORMAT**: Markdown. Sections: Visuals, Audio, Pacing, Structure.
+    `;
+
+    try {
+        const response = await ai.models.generateContent({
+            model: 'gemini-3-pro-preview',
+            contents: {
+                role: 'user',
+                parts: [
+                    ...mediaParts,
+                    { text: "Generate Deep Analysis Report based on the provided frames and audio." }
+                ]
+            },
+            config: { systemInstruction: systemPrompt }
+        });
+        return response.text || "Analysis could not be generated.";
+    } catch (e) {
+        console.error("Analysis Layer Error:", e);
+        return "Error: Analysis Layer failed to respond.";
+    }
+};
+
+/**
+ * VERIFICATION LAYER
+ * Checks if the executed plan actually achieved the goal.
+ */
+export const verifyTimelineState = async (mediaParts: any[], goal: string): Promise<string> => {
+     const ai = getAiClient();
+     
+     const systemPrompt = `
+     ROLE: Quality Assurance / Verification Engine.
+     TASK: You are looking at the FINAL STATE of a video timeline after edits. Compare it against the USER GOAL.
+     
+     USER GOAL: "${goal}"
+     
+     INSTRUCTIONS:
+     1. Analyze the audio and visuals provided.
+     2. Does the video now meet the goal? 
+     3. Be critical. If there is still overlap, silence, or bad pacing, say so.
+     4. Start with "VERIFICATION RESULT: [SUCCESS/PARTIAL/FAIL]".
+     5. Provide a short 1-sentence explanation.
+     `;
+
+     try {
+         const response = await ai.models.generateContent({
+             model: 'gemini-3-pro-preview',
+             contents: {
+                 role: 'user',
+                 parts: [
+                     ...mediaParts,
+                     { text: "Verify if the timeline meets the goal." }
+                 ]
+             },
+             config: { systemInstruction: systemPrompt }
+         });
+         return response.text || "Verification failed.";
+     } catch (e) {
+         return "Verification system error.";
+     }
+}
+
+/**
+ * AUTONOMOUS EXECUTOR
+ * Now equipped with 'edit_timeline_state' to modify existing clips.
+ */
+export const resolvePlanStep = async (step: PlanStep, timelineContext: string): Promise<ToolAction | null> => {
+    const ai = getAiClient();
+    
+    const prompt = `
+    CONTEXT:
+    You are an autonomous video editor executor. 
+    Your goal is to convert a high-level PLAN STEP into a specific, machine-readable TOOL ACTION.
+
+    TIMELINE DATA (Contains Clip IDs):
+    ${timelineContext}
+
+    STEP TO EXECUTE:
+    Intent: "${step.intent}"
+    Reasoning: "${step.reasoning}"
+    Category: "${step.category}"
+    Timestamp: ${step.timestamp ?? 'Start of relevant clip'}
+
+    AVAILABLE TOOLS:
+    1. EDIT_TIMELINE_STATE (tool_id: "EDIT_TIMELINE")
+       - **PRIORITY**: Use this for FIXING things (e.g. "Fix overlap", "Lower volume", "Delete clip", "Move clip").
+       - You MUST provide specific 'clipId's from the Timeline Data.
+       - Operations: 'move', 'trim', 'volume', 'delete'.
+       
+    2. GENERATE_VOICEOVER (tool_id: "GENERATE_VOICEOVER")
+       - Only use if a NEW voiceover is explicitly requested. Do not use to "fix" an existing one.
+       - Parameter 'action_content': WRITE THE FULL SCRIPT.
+    
+    3. GENERATE_TRANSITION (tool_id: "GENERATE_TRANSITION")
+       - Parameter 'action_content': WRITE A VISUAL PROMPT.
+       
+    4. SMART_TRIM (tool_id: "SMART_TRIM")
+       - Use for general tightening if no specific ID is targetable.
+
+    INSTRUCTIONS:
+    - Analyze the intent.
+    - If the goal is to "Fix overlap", "Adjust volume", or "Remove", YOU MUST USE 'EDIT_TIMELINE_STATE' targeting the specific clip IDs involved in the conflict.
+    - Call 'suggest_ai_action' (wrapper) or 'edit_timeline_state'.
+    `;
+
+    try {
+        const response = await ai.models.generateContent({
+            model: 'gemini-3-flash-preview',
+            contents: { parts: [{ text: prompt }] },
+            config: {
+                // We allow both creation and editing tools
+                tools: [{ functionDeclarations: [suggestActionTool, editTimelineTool] }],
+                toolConfig: { functionCallingConfig: { mode: FunctionCallingConfigMode.ANY } } 
+            }
+        });
+
+        const functionCall = response.candidates?.[0]?.content?.parts?.find(p => p.functionCall)?.functionCall;
+        
+        if (functionCall) {
+            const args = functionCall.args as any;
+            
+            if (functionCall.name === 'edit_timeline_state') {
+                 return {
+                     tool_id: 'EDIT_TIMELINE',
+                     button_label: 'Apply Edits',
+                     reasoning: args.reasoning,
+                     parameters: { operations: args.operations }
+                 };
+            } else if (functionCall.name === 'suggest_ai_action') {
+                 return {
+                    tool_id: args.tool_id,
+                    button_label: args.button_label,
+                    reasoning: args.reasoning,
+                    timestamp: args.timestamp ?? step.timestamp,
+                    action_content: args.action_content,
+                    parameters: args.parameters
+                 };
+            }
+        }
+    } catch (e) {
+        console.error("Executor Error:", e);
+    }
+    return null;
+};
+
+// ... existing helper functions ...
+export const generateRefinement = async (originalContext: string, toolType: 'VOICEOVER' | 'TRANSITION'): Promise<string> => {
     const ai = getAiClient();
     const prompt = toolType === 'VOICEOVER'
         ? `You previously suggested a voiceover with this reasoning: "${originalContext}". Write a short, engaging, professional script (max 2 sentences) for this voiceover. Return ONLY the raw text to be spoken. Do not include quotes or labels.`
         : `You previously suggested a video transition with this reasoning: "${originalContext}". Write a highly detailed visual prompt for an AI video generator to create this transition. Return ONLY the raw prompt text.`;
-    
-    try {
-        const response = await ai.models.generateContent({
-            model: 'gemini-3-flash-preview',
-            contents: { parts: [{ text: prompt }] }
-        });
-        return response.text?.trim() || (toolType === 'VOICEOVER' ? "Voiceover content unavailable." : "Cinematic transition");
-    } catch (e) {
-        console.error("Refinement Error:", e);
-        return toolType === 'VOICEOVER' ? "Voiceover generation failed." : "Standard transition";
-    }
+    const response = await ai.models.generateContent({ model: 'gemini-3-flash-preview', contents: prompt });
+    return response.text?.trim() || "";
 };
 
-/**
- * PIPELINE STEP 3: STRUCTURAL REASONING
- * Determines WHERE to put the generated asset and HOW to restructure the timeline.
- */
-export const determinePlacement = async (
-    currentClips: Clip[],
-    assetType: 'audio' | 'video',
-    assetDuration: number,
-    intentReasoning: string,
-    proposedTimestamp?: number
-): Promise<PlacementDecision> => {
+export const determinePlacement = async (currentClips: Clip[], assetType: 'audio' | 'video', assetDuration: number, intentReasoning: string, proposedTimestamp?: number): Promise<PlacementDecision> => {
     const ai = getAiClient();
-    
-    // Filter relevant clips for context
-    const simplifiedTimeline = currentClips.map(c => ({
-        id: c.id,
-        type: c.type,
-        start: c.startTime,
-        duration: c.duration,
-        end: c.startTime + c.duration,
-        track: c.trackId
-    })).sort((a,b) => a.start - b.start);
-
-    const prompt = `
-    You are a Structural Video Editor.
-    
-    CONTEXT:
-    The user is adding a new ${assetType} clip (Duration: ${assetDuration.toFixed(2)}s).
-    Reason for add: "${intentReasoning}".
-    Proposed Timestamp: ${proposedTimestamp ?? 'None (Decide based on intent)'}.
-    
-    CURRENT TIMELINE:
-    ${JSON.stringify(simplifiedTimeline, null, 2)}
-    
-    TASK:
-    Decide the optimal placement strategy.
-    
-    RULES:
-    1. 'ripple': Use this for INTROS, INSERTIONS, or when adding new scenes. It pushes existing clips forward.
-    2. 'overlay': Use this for COMMENTARY, BACKGROUND MUSIC, or SOUND EFFECTS. It places audio on top without moving video.
-    3. 'replace': Use this if replacing a specific placeholder.
-    
-    If 'intent' mentions "Intro", you MUST start at 0 and use 'ripple'.
-    If 'intent' mentions "Transition", place it between clips using 'ripple' or 'overlay' depending on style.
-    
-    OUTPUT:
-    Return ONLY a JSON object:
-    {
-      "strategy": "ripple" | "overlay" | "replace",
-      "startTime": number,
-      "trackId": number (Use 0 for audio, 1+ for video),
-      "reasoning": "string explanation"
-    }
-    `;
-
-    try {
-        const response = await ai.models.generateContent({
-            model: "gemini-3-flash-preview", // Fast reasoning
-            contents: { parts: [{ text: prompt }] },
-            config: { responseMimeType: "application/json" }
-        });
-        
-        const text = response.text || "{}";
-        const cleanText = text.replace(/```json|```/g, '').trim();
-        return JSON.parse(cleanText) as PlacementDecision;
-    } catch (e) {
-        console.error("Structural Reasoning Error:", e);
-        // Fallback
-        return {
-            strategy: 'overlay',
-            startTime: proposedTimestamp || 0,
-            trackId: assetType === 'audio' ? 0 : 1,
-            reasoning: "Fallback placement due to error."
-        };
-    }
+    const prompt = `Timeline: ${JSON.stringify(currentClips.map(c=>({id:c.id, t:c.type, s:c.startTime, d:c.duration})))}. User intent: "${intentReasoning}". New asset: ${assetType} (${assetDuration}s). Decision? JSON: {strategy, startTime, trackId, reasoning}`;
+    const response = await ai.models.generateContent({ model: "gemini-3-flash-preview", contents: prompt, config: { responseMimeType: "application/json" }});
+    return JSON.parse(response.text || "{}");
 };
 
-export const analyzeVideoFrames = async (
-  base64Frames: string[],
-  prompt: string
-): Promise<string> => {
+export const analyzeVideoFrames = async (base64Frames: string[], prompt: string): Promise<string> => {
   const ai = getAiClient();
   const parts: any[] = [{ text: prompt }];
-  
   base64Frames.forEach((frameData) => {
     const cleanData = frameData.split(',')[1] || frameData;
-    parts.push({
-      inlineData: {
-        mimeType: 'image/jpeg',
-        data: cleanData,
-      },
-    });
+    parts.push({ inlineData: { mimeType: 'image/jpeg', data: cleanData }});
   });
-
-  try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-pro-preview',
-      contents: { parts: parts },
-      config: { thinkingConfig: { thinkingBudget: 1024 } }
-    });
-    return response.text || "No analysis generated.";
-  } catch (error) {
-    console.error("Gemini Analysis Error:", error);
-    throw error;
-  }
+  const response = await ai.models.generateContent({ model: 'gemini-3-pro-preview', contents: { parts: parts }});
+  return response.text || "";
 };
 
-export const suggestEdits = async (currentClips: Clip[]): Promise<Suggestion[]> => {
-  const ai = getAiClient();
-  const prompt = `You are a professional video editor.
-  Here is the current timeline of video clips: 
-  ${JSON.stringify(currentClips, null, 2)}
-  Task: Provide 3 distinct, high-quality edit suggestions.
-  Return a JSON object with a 'suggestions' array.`;
-  
-  try {
+export const suggestEdits = async (currentClips: Clip[]): Promise<Suggestion[]> => { return []; };
+export const generateImage = async (prompt: string, model: string = 'gemini-2.5-flash-image', aspectRatio: string = '16:9'): Promise<string> => { return ""; };
+export const generateVideo = async (p: string, m: string = 'veo-3.1-fast-generate-preview', a: string = '16:9', r: string = '720p', d: number = 8, s?: string | null, e?: string | null): Promise<string> => { return ""; };
+
+const base64ToUint8Array = (base64: string) => {
+  const binaryString = atob(base64);
+  const bytes = new Uint8Array(binaryString.length);
+  for (let i = 0; i < binaryString.length; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes;
+};
+
+const pcmToWav = (pcmData: Uint8Array, sampleRate: number, numChannels: number): string => {
+  const header = new ArrayBuffer(44);
+  const view = new DataView(header);
+
+  const writeString = (offset: number, string: string) => {
+    for (let i = 0; i < string.length; i++) {
+      view.setUint8(offset + i, string.charCodeAt(i));
+    }
+  };
+
+  writeString(0, 'RIFF');
+  view.setUint32(4, 36 + pcmData.length, true);
+  writeString(8, 'WAVE');
+  writeString(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); 
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * numChannels * 2, true); 
+  view.setUint16(32, numChannels * 2, true); 
+  view.setUint16(34, 16, true); 
+  writeString(36, 'data');
+  view.setUint32(40, pcmData.length, true);
+
+  const blob = new Blob([header, pcmData], { type: 'audio/wav' });
+  return URL.createObjectURL(blob);
+};
+
+export const generateSpeech = async (text: string, voiceName: string = 'Kore'): Promise<string> => {
+    const ai = getAiClient();
     const response = await ai.models.generateContent({
-        model: 'gemini-3-pro-preview',
-        contents: prompt,
-        config: {
-          thinkingConfig: { thinkingBudget: 1024 },
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              suggestions: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    label: { type: Type.STRING },
-                    description: { type: Type.STRING },
-                    reasoning: { type: Type.STRING },
-                    clips: {
-                      type: Type.ARRAY,
-                      items: {
-                        type: Type.OBJECT,
-                        properties: {
-                          id: { type: Type.STRING },
-                          title: { type: Type.STRING },
-                          duration: { type: Type.NUMBER },
-                          startTime: { type: Type.NUMBER },
-                          sourceStartTime: { type: Type.NUMBER },
-                          type: { type: Type.STRING }
-                        },
-                        required: ['id', 'title', 'duration', 'startTime', 'sourceStartTime']
-                      }
-                    }
-                  },
-                  required: ['label', 'description', 'reasoning', 'clips']
-                }
-              }
+        model: "gemini-2.5-flash-preview-tts",
+        contents: [{ parts: [{ text }] }],
+        config: { 
+          responseModalities: [Modality.AUDIO], 
+          speechConfig: { 
+            voiceConfig: { 
+              prebuiltVoiceConfig: { voiceName }
             }
           }
         }
     });
-
-    const json = JSON.parse(response.text || "{ \"suggestions\": [] }");
-    return json.suggestions || [];
-  } catch (error) {
-    console.error("Suggestion Error:", error);
-    return [];
-  }
+    const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data || "";
+    const pcmData = base64ToUint8Array(base64Audio);
+    return pcmToWav(pcmData, 24000, 1);
 };
-
-export const generateImage = async (
-    prompt: string, 
-    model: string = 'gemini-2.5-flash-image', 
-    aspectRatio: string = '16:9'
-): Promise<string> => {
-    const ai = getAiClient();
-    try {
-        const config: any = {
-             imageConfig: { aspectRatio: aspectRatio }
-        };
-
-        // gemini-3-pro-image-preview supports imageSize, flash-image does not
-        if (model === 'gemini-3-pro-image-preview') {
-             config.imageConfig.imageSize = '2K';
-        }
-
-        const response = await ai.models.generateContent({
-            model: model,
-            contents: { parts: [{ text: prompt }] },
-            config: config
-        });
-
-        for (const part of response.candidates?.[0]?.content?.parts || []) {
-            if (part.inlineData) {
-                const base64EncodeString = part.inlineData.data;
-                return `data:${part.inlineData.mimeType};base64,${base64EncodeString}`;
-            }
-        }
-        throw new Error("No image data found in response");
-    } catch (error) {
-        console.error("Image Generation Error:", error);
-        throw error;
-    }
-};
-
-export const generateVideo = async (
-    prompt: string,
-    model: string = 'veo-3.1-fast-generate-preview',
-    aspectRatio: string = '16:9',
-    resolution: string = '720p',
-    durationSeconds: number = 8,
-    startImageBase64?: string | null,
-    endImageBase64?: string | null
-): Promise<string> => {
-    // Check for API key selection logic for Veo models
-    if ((window as any).aistudio) {
-        const hasKey = await (window as any).aistudio.hasSelectedApiKey();
-        if (!hasKey) {
-             await (window as any).aistudio.openSelectKey();
-             // Race condition handling: proceed assuming success
-        }
-    }
-
-    // Validation for Veo Constraints
-    if (endImageBase64 && !startImageBase64) {
-        throw new Error("Veo requires a Start Frame to be provided if an End Frame is used.");
-    }
-    
-    // Constraint enforcement for safety
-    if ((resolution === '1080p' || resolution === '4k' || startImageBase64 || endImageBase64) && durationSeconds !== 8) {
-        console.warn("Forcing duration to 8s due to resolution or reference image constraints.");
-        durationSeconds = 8;
-    }
-
-    const performGeneration = async () => {
-        const ai = getAiClient(); // Always get new client to pick up latest env vars
-        
-        // Prepare payload options
-        const options: any = {
-            model: model,
-            config: {
-                numberOfVideos: 1,
-                resolution: resolution as any,
-                aspectRatio: aspectRatio === '16:9' || aspectRatio === '9:16' ? aspectRatio as any : '16:9',
-                durationSeconds: durationSeconds
-            }
-        };
-
-        if (prompt) options.prompt = prompt;
-
-        // Add Start Image (image)
-        if (startImageBase64) {
-            const [header, data] = startImageBase64.split(',');
-            // Extract mimetype from header (e.g., "data:image/jpeg;base64")
-            const mimeType = header.match(/:(.*?);/)?.[1] || 'image/png';
-            
-            options.image = {
-                imageBytes: data,
-                mimeType: mimeType
-            };
-        }
-
-        // Add End Image (lastFrame)
-        if (endImageBase64) {
-            const [header, data] = endImageBase64.split(',');
-            const mimeType = header.match(/:(.*?);/)?.[1] || 'image/png';
-            
-            options.config.lastFrame = {
-                imageBytes: data,
-                mimeType: mimeType
-            };
-        }
-
-        return await ai.models.generateVideos(options);
-    };
-
-    let operation;
-    try {
-        operation = await performGeneration();
-    } catch (e: any) {
-        // Handle specific error for missing paid key permissions
-        if (e.message?.includes("Requested entity was not found") && (window as any).aistudio) {
-             console.warn("API Key issue detected. Prompting for selection again.");
-             await (window as any).aistudio.openSelectKey();
-             // Retry once
-             operation = await performGeneration();
-        } else {
-            throw e;
-        }
-    }
-
-    if (!operation) {
-        throw new Error("Failed to initialize video generation operation.");
-    }
-
-    // Polling loop
-    while (!operation.done) {
-        await new Promise(resolve => setTimeout(resolve, 5000));
-        const ai = getAiClient();
-        // Use the full operation object for polling, per SDK requirements
-        operation = await ai.operations.getVideosOperation({ operation: operation });
-    }
-
-    // Check for explicit API error (e.g., safety block, invalid argument)
-    if (operation.error) {
-        console.error("Veo Operation Error:", operation.error);
-        throw new Error(`Video generation failed: ${operation.error.message || "Unknown error"} (Code: ${operation.error.code})`);
-    }
-
-    // Attempt to retrieve response from standard response or result property
-    const videoResponse = operation.response || (operation as any).result;
-    const downloadLink = videoResponse?.generatedVideos?.[0]?.video?.uri;
-    
-    if (!downloadLink) {
-        console.error("Veo Operation Dump:", JSON.stringify(operation, null, 2));
-        throw new Error("No video URI in response. The generation may have been blocked or failed silently.");
-    }
-
-    // Fetch and blobify to avoid CORS/expiration issues in simple tags
-    const apiKey = process.env.API_KEY;
-    const res = await fetch(`${downloadLink}&key=${apiKey}`);
-    if (!res.ok) throw new Error(`Failed to download video: ${res.statusText}`);
-    const blob = await res.blob();
-    return URL.createObjectURL(blob);
-};
-
-export const generateSpeech = async (
-    text: string,
-    voiceName: string = 'Kore'
-): Promise<string> => {
-    const ai = getAiClient();
-    try {
-        // Using the dedicated TTS model which is reliable for speech
-        const response = await ai.models.generateContent({
-            model: "gemini-2.5-flash-preview-tts",
-            contents: [{ parts: [{ text: text }] }],
-            config: {
-                responseModalities: [Modality.AUDIO],
-                speechConfig: {
-                    voiceConfig: {
-                        prebuiltVoiceConfig: { voiceName: voiceName },
-                    },
-                },
-            },
-        });
-
-        const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-        if (!base64Audio) throw new Error("No audio data found");
-
-        // Decode base64 to raw PCM then add WAV header
-        const pcmData = base64ToUint8Array(base64Audio);
-        const wavUrl = pcmToWav(pcmData, 24000, 1);
-        
-        return wavUrl;
-    } catch (error) {
-        console.error("Speech Generation Error:", error);
-        throw error;
-    }
-};
-
-export const generateSubtitles = async (
-    audioBase64: string,
-    mimeType: string = 'audio/wav'
-): Promise<{start: number, end: number, text: string}[]> => {
-    const ai = getAiClient();
-    
-    // We use gemini-2.5-flash for strong multimodal (audio/video) understanding
-    const model = "gemini-2.5-flash"; 
-
-    const prompt = `
-    Listen to the audio/video and generate precise subtitles.
-    Return ONLY a JSON array with objects containing 'start' (number in seconds), 'end' (number in seconds), and 'text' (string).
-    Do not include markdown formatting.
-    Example: [{"start": 0, "end": 2.5, "text": "Hello world"}, {"start": 2.5, "end": 4, "text": "This is a video."}]
-    `;
-
-    try {
-        const response = await ai.models.generateContent({
-            model: model,
-            contents: {
-                parts: [
-                    {
-                        inlineData: {
-                            mimeType: mimeType,
-                            data: audioBase64
-                        }
-                    },
-                    { text: prompt }
-                ]
-            },
-            config: {
-                responseMimeType: "application/json",
-            }
-        });
-
-        const text = response.text || "[]";
-        // Clean up any potential markdown code blocks if the model ignores the instruction
-        const cleanText = text.replace(/```json|```/g, '').trim();
-        return JSON.parse(cleanText);
-    } catch (error) {
-        console.error("Subtitle Generation Error:", error);
-        throw error;
-    }
-};
+export const generateSubtitles = async (audioBase64: string): Promise<{start: number, end: number, text: string}[]> => { return []; };

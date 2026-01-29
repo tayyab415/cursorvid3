@@ -31,10 +31,57 @@ export interface Clip {
   volume?: number; // Audio volume 0-1 (default 1)
 }
 
-export interface AnalysisResult {
-  summary: string;
-  keyEvents: { timestamp: string; description: string }[];
-  mood: string;
+export interface PlanStep {
+  id: string;
+  intent: string;              // Free-form, human-readable
+  category?: 'visual' | 'audio' | 'pacing' | 'style';
+  reasoning: string;
+  timestamp?: number;
+  status: 'pending' | 'approved' | 'rejected';
+}
+
+export interface EditPlan {
+  goal: string;
+  analysis: string;
+  steps: PlanStep[];
+}
+
+export interface VideoIntent {
+  platform?: string; // e.g. TikTok, YouTube, Internal
+  goal?: string;     // e.g. Viral, Educational, Storytelling
+  tone?: string;     // e.g. Energetic, Cinematic, Calm
+}
+
+export interface TimelineOperation {
+  type: 'move' | 'trim' | 'volume' | 'delete';
+  clipId: string;
+  // Parameters depending on type
+  newStartTime?: number;
+  newTrackId?: number;
+  newDuration?: number;
+  newVolume?: number;
+}
+
+// Contract for Gemini Tool Calls ("suggest_ai_action")
+export interface ToolAction {
+  tool_id: "GENERATE_TRANSITION" | "GENERATE_VOICEOVER" | "SMART_TRIM" | "EDIT_TIMELINE";
+  button_label: string;
+  reasoning: string;
+  timestamp?: number;
+  action_content?: string; 
+  parameters?: {
+     operations?: TimelineOperation[];
+     [key: string]: any;
+  };
+}
+
+export interface ChatMessage {
+  role: 'user' | 'model' | 'system';
+  text: string;
+  suggestions?: Suggestion[];
+  toolAction?: ToolAction; // For single-hit actions
+  plan?: EditPlan;         // For the Orchestrator workflow
+  intentUpdate?: VideoIntent; // When the model infers new intent
 }
 
 export interface Suggestion {
@@ -44,34 +91,15 @@ export interface Suggestion {
   clips: Clip[];
 }
 
-// Contract for Gemini Tool Calls ("suggest_ai_action")
-export interface ToolAction {
-  tool_id: "GENERATE_TRANSITION" | "GENERATE_VOICEOVER" | "SMART_TRIM";
-  button_label: string;
-  reasoning: string;
-  timestamp?: number;
-  action_content?: string; // The script for VO, or prompt for transition
-  parameters?: any;
-}
-
-export interface ChatMessage {
-  role: 'user' | 'model' | 'system';
-  text: string;
-  suggestions?: Suggestion[];
-  toolAction?: ToolAction; // Support for structured tool widgets
-}
-
-// NEW: Editor Truth for a selection
 export interface TimelineRange {
-  start: number; // Global timeline start (seconds)
-  end: number;   // Global timeline end (seconds)
+  start: number;
+  end: number;
   tracks: {
     id: number;
-    clips: Clip[]; // Only clips intersecting this range
+    clips: Clip[];
   }[];
 }
 
-// NEW: Response from the Structural Reasoning Agent
 export interface PlacementDecision {
   strategy: 'ripple' | 'overlay' | 'replace';
   startTime: number;

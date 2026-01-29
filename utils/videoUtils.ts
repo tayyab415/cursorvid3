@@ -71,6 +71,10 @@ export const captureFrameFromVideoUrl = async (
     timeOffset: number
 ): Promise<string> => {
     return new Promise((resolve, reject) => {
+        if (!videoUrl) {
+            return reject(new Error("No video URL provided"));
+        }
+
         const video = document.createElement('video');
         video.crossOrigin = "anonymous";
         video.src = videoUrl;
@@ -79,8 +83,15 @@ export const captureFrameFromVideoUrl = async (
 
         // Timeout safety
         const timeout = setTimeout(() => {
+             video.src = ""; // Stop loading
              reject(new Error("Frame capture timeout"));
         }, 5000);
+
+        const cleanUp = () => {
+            clearTimeout(timeout);
+            video.removeAttribute('src'); 
+            video.load();
+        };
 
         video.onloadeddata = () => {
              // Clamp time
@@ -92,26 +103,30 @@ export const captureFrameFromVideoUrl = async (
         };
 
         video.onseeked = () => {
-            clearTimeout(timeout);
-            const canvas = document.createElement('canvas');
-            canvas.width = video.videoWidth || 1280;
-            canvas.height = video.videoHeight || 720;
-            const ctx = canvas.getContext('2d');
-            if (ctx) {
-                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-                const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
-                resolve(dataUrl);
-            } else {
-                reject(new Error("Could not create canvas context"));
+            try {
+                const canvas = document.createElement('canvas');
+                canvas.width = video.videoWidth || 1280;
+                canvas.height = video.videoHeight || 720;
+                const ctx = canvas.getContext('2d');
+                if (ctx) {
+                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                    const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+                    cleanUp();
+                    resolve(dataUrl);
+                } else {
+                    cleanUp();
+                    reject(new Error("Could not create canvas context"));
+                }
+            } catch (e) {
+                cleanUp();
+                reject(e);
             }
-            // Cleanup
-            video.removeAttribute('src'); 
-            video.load();
         };
 
         video.onerror = (e) => {
-            clearTimeout(timeout);
-            reject(new Error("Error loading video for frame capture"));
+            cleanUp();
+            // Don't reject with an Event object as it clutters logs/UI
+            reject(new Error("Error loading video for frame capture (Network/Format)"));
         };
     });
 };
