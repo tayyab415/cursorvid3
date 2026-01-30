@@ -1,14 +1,29 @@
-
 import { GoogleGenAI, Type, FunctionDeclaration, Modality, FunctionCallingConfigMode } from "@google/genai";
 import { Clip, ToolAction, PlacementDecision, EditPlan, Suggestion, PlanStep, VideoIntent } from "../types";
+import { TIMELINE_PRIMITIVES } from "./timelinePrimitives";
 
-const getAiClient = () => {
+// Export this for agents to use
+export const getAiClient = () => {
   const apiKey = process.env.API_KEY;
   if (!apiKey) {
     throw new Error("API_KEY is not defined");
   }
   return new GoogleGenAI({ apiKey });
 };
+
+// Retry helper
+async function callWithRetry<T>(fn: () => Promise<T>, retries = 3, delay = 2000): Promise<T> {
+  try {
+    return await fn();
+  } catch (error: any) {
+    if (retries > 0 && (error.status === 429 || error.code === 429 || error.message?.includes('429') || error.message?.includes('RESOURCE_EXHAUSTED'))) {
+      console.warn(`Quota hit. Retrying in ${delay}ms... (${retries} retries left)`);
+      await new Promise(r => setTimeout(r, delay));
+      return callWithRetry(fn, retries - 1, delay * 2);
+    }
+    throw error;
+  }
+}
 
 // --- TOOL DEFINITIONS ---
 
@@ -58,53 +73,6 @@ const createEditPlanTool: FunctionDeclaration = {
   }
 };
 
-const editTimelineTool: FunctionDeclaration = {
-    name: 'edit_timeline_state',
-    description: 'Directly modify the timeline structure: move clips, change volume, delete clips, or trim duration. Use this for FIXING issues (overlap, silence, pacing) or REFINING existing elements.',
-    parameters: {
-        type: Type.OBJECT,
-        properties: {
-            operations: {
-                type: Type.ARRAY,
-                items: {
-                    type: Type.OBJECT,
-                    properties: {
-                        type: { type: Type.STRING, enum: ['move', 'trim', 'volume', 'delete'] },
-                        clipId: { type: Type.STRING, description: 'The exact ID of the clip to modify.' },
-                        newStartTime: { type: Type.NUMBER, description: 'For move: new start time in seconds.' },
-                        newTrackId: { type: Type.NUMBER, description: 'For move: new track index.' },
-                        newDuration: { type: Type.NUMBER, description: 'For trim: new duration in seconds.' },
-                        newVolume: { type: Type.NUMBER, description: 'For volume: 0.0 to 1.0.' }
-                    },
-                    required: ['type', 'clipId']
-                }
-            },
-            reasoning: { type: Type.STRING }
-        },
-        required: ['operations', 'reasoning']
-    }
-};
-
-const suggestActionTool: FunctionDeclaration = {
-  name: 'suggest_ai_action',
-  description: 'Propose a single executable editing action for GENERATION tasks (creating NEW content).',
-  parameters: {
-    type: Type.OBJECT,
-    properties: {
-      tool_id: {
-        type: Type.STRING,
-        enum: ['GENERATE_TRANSITION', 'GENERATE_VOICEOVER', 'SMART_TRIM'],
-        description: 'The specific action ID to execute.'
-      },
-      button_label: { type: Type.STRING },
-      reasoning: { type: Type.STRING },
-      timestamp: { type: Type.NUMBER },
-      action_content: { type: Type.STRING, description: 'Payload for the action (script for VO, prompt for transition).' }
-    },
-    required: ['tool_id', 'button_label', 'reasoning']
-  }
-};
-
 const performAnalysisTool: FunctionDeclaration = {
     name: 'perform_deep_analysis',
     description: 'Use this tool IMMEDIATELY when the user asks to "analyze", "review", or "check" the video. This delegates the task to a specialized factual analysis engine.',
@@ -141,30 +109,13 @@ You coordinate between the User, the Analysis Engine, and the Editing Tools.
 ${intentContext}
 
 ========================
-THE PIPELINE (LAYERS)
+THE PIPELINE
 ========================
+1. **ANALYSIS**: If user asks to analyze, call 'perform_deep_analysis'.
+2. **PLANNING**: If user makes a complex request ("Fix the pacing"), call 'create_edit_plan'.
+3. **EXECUTION**: If user gives a direct command ("Delete the first clip", "Add voiceover"), use the TIMELINE PRIMITIVES directly (update_clip_property, ripple_delete, etc).
 
-1. **ANALYSIS LAYER (Neutral/Factual)**
-   - Trigger: User asks "Analyze this", "What's on the timeline?", "Review video", "Check my work".
-   - ACTION: **You MUST call the tool \`perform_deep_analysis\` immediately.**
-   - Do NOT attempt to analyze the timeline yourself using only metadata. Delegate to the Engine which sees the frames.
-
-2. **PLANNING LAYER (Strategic)**
-   - Trigger: User says "Fix it", "Make it better", "Edit for TikTok".
-   - ACTION: Check if you have the *Video Intent* (Platform/Goal).
-     - If MISSING: Ask the user.
-     - If KNOWN: Call \`create_edit_plan\`.
-
-3. **EXECUTION LAYER (Tactical)**
-   - Trigger: User gives a specific command ("Add transition").
-   - ACTION: Call \`suggest_ai_action\`.
-
-========================
-CRITICAL RULES
-========================
-- **DELEGATE ANALYSIS**: Never hallucinate a critique. Always use \`perform_deep_analysis\` for a fresh look at the visual evidence.
-- **CONTEXT FIRST**: If the user says "Improve this" but you don't know the goal, ASK.
-- **NO AUTOPILOT**: "Hi" = Conversation. "Analyze" = Tool Call.
+Do not hallucinate responses. Use tools.
     `;
 
     const chat = ai.chats.create({
@@ -172,13 +123,21 @@ CRITICAL RULES
         history: apiHistory,
         config: {
             systemInstruction: systemInstruction,
-            tools: [{ functionDeclarations: [createEditPlanTool, suggestActionTool, updateVideoIntentTool, performAnalysisTool] }],
+            tools: [{ 
+                functionDeclarations: [
+                    createEditPlanTool, 
+                    performAnalysisTool, 
+                    updateVideoIntentTool,
+                    ...TIMELINE_PRIMITIVES 
+                ] 
+            }],
         }
     });
 
     try {
         const msgPayload = typeof message === 'string' ? { message } : { message: message };
-        const result = await chat.sendMessage(msgPayload);
+        // Apply retry logic here
+        const result = await callWithRetry(() => chat.sendMessage(msgPayload));
         
         let toolAction: ToolAction | undefined;
         let editPlan: EditPlan | undefined;
@@ -195,15 +154,6 @@ CRITICAL RULES
                         analysis: args.analysis,
                         steps: args.steps.map((s: any) => ({ ...s, status: 'approved' }))
                     };
-                } else if (call.name === 'suggest_ai_action') {
-                    toolAction = {
-                        tool_id: args.tool_id,
-                        button_label: args.button_label,
-                        reasoning: args.reasoning,
-                        timestamp: args.timestamp,
-                        action_content: args.action_content,
-                        parameters: args.parameters
-                    };
                 } else if (call.name === 'update_video_intent') {
                     intentUpdate = {
                         platform: args.platform,
@@ -212,12 +162,33 @@ CRITICAL RULES
                     };
                 } else if (call.name === 'perform_deep_analysis') {
                     shouldAnalyze = true;
+                } else {
+                    // It's a primitive call! Map it to a "Single Action"
+                    toolAction = {
+                        tool_id: call.name as any,
+                        button_label: `Execute ${call.name.replace(/_/g, ' ')}`,
+                        reasoning: "Direct execution command",
+                        parameters: args
+                    };
                 }
             }
         }
 
+        // Avoid SDK warning by checking for text existence manually instead of accessing .text getter when it might be empty
+        let responseText = "";
+        const textPart = result.candidates?.[0]?.content?.parts?.find(p => p.text);
+        if (textPart && textPart.text) {
+            responseText = textPart.text;
+        } else {
+             // Fallback text if no text part exists but we have actions
+             if (shouldAnalyze) responseText = "Initializing Analysis Engine...";
+             else if (editPlan) responseText = "Proposed Edit Plan:";
+             else if (toolAction) responseText = "Suggested Action:";
+             else if (intentUpdate) responseText = "Intent Updated.";
+        }
+
         return { 
-            text: result.text || (shouldAnalyze ? "Initializing Analysis Engine..." : (editPlan ? "Proposed Edit Plan:" : toolAction ? "Suggested Action:" : "Intent Updated.")), 
+            text: responseText,
             toolAction, 
             plan: editPlan,
             intentUpdate,
@@ -225,6 +196,9 @@ CRITICAL RULES
         };
     } catch (e: any) {
         console.error("Chat Error:", e);
+        if (e.status === 429 || e.code === 429) {
+             return { text: "I'm currently receiving too many requests. Please wait a moment and try again." };
+        }
         return { text: "Communication error. Please check your API key and network." };
     }
 };
@@ -248,8 +222,8 @@ export const performDeepAnalysis = async (mediaParts: any[]): Promise<string> =>
     `;
 
     try {
-        const response = await ai.models.generateContent({
-            model: 'gemini-3-pro-preview',
+        const response = await callWithRetry(() => ai.models.generateContent({
+            model: 'gemini-3-pro-preview', // Keep Pro for analysis as it's better at vision
             contents: {
                 role: 'user',
                 parts: [
@@ -258,152 +232,31 @@ export const performDeepAnalysis = async (mediaParts: any[]): Promise<string> =>
                 ]
             },
             config: { systemInstruction: systemPrompt }
-        });
-        return response.text || "Analysis could not be generated.";
+        }));
+        
+        const textPart = response.candidates?.[0]?.content?.parts?.find(p => p.text);
+        return textPart?.text || "Analysis could not be generated.";
     } catch (e) {
         console.error("Analysis Layer Error:", e);
         return "Error: Analysis Layer failed to respond.";
     }
 };
 
-/**
- * METADATA VERIFICATION LAYER
- * Quick structural check after an action.
- */
-export const verifyActionOutcome = async (step: PlanStep, currentClips: Clip[]): Promise<string> => {
-    const ai = getAiClient();
-    const prompt = `
-    ROLE: Independent Timeline Verifier.
-    GOAL: Check if a specific editing action was successfully applied to the timeline.
-
-    ORIGINAL INTENT: "${step.intent}"
-    REASONING: "${step.reasoning}"
-
-    CURRENT TIMELINE STATE (Metadata):
-    ${JSON.stringify(currentClips.map(c => ({
-        id: c.id, type: c.type, start: c.startTime.toFixed(2), end: (c.startTime+c.duration).toFixed(2), title: c.title, track: c.trackId
-    })))}
-
-    INSTRUCTIONS:
-    1. Analyze the timeline metadata.
-    2. Did the action happen? (e.g. if intent was "Add voiceover", is there a new audio clip? If "Delete", is it gone?)
-    3. Are there obvious issues? (e.g. overlapping voiceovers, gaps).
-    4. Return a concise status report (1-2 sentences). Start with "VERIFIED:" or "ISSUE:".
-    `;
-
-    try {
-        const response = await ai.models.generateContent({
-            model: 'gemini-3-flash-preview',
-            contents: { parts: [{ text: prompt }] },
-            config: { systemInstruction: "You are a factual verification engine." }
-        });
-        return response.text?.trim() || "Verification unavailable.";
-    } catch (e) {
-        console.error("Verification Error:", e);
-        return "Verification check failed.";
-    }
-}
-
-/**
- * AUTONOMOUS EXECUTOR
- * Now equipped with 'edit_timeline_state' to modify existing clips.
- */
-export const resolvePlanStep = async (step: PlanStep, timelineContext: string): Promise<ToolAction | null> => {
-    const ai = getAiClient();
-    
-    const prompt = `
-    CONTEXT:
-    You are an autonomous video editor executor. 
-    Your goal is to convert a high-level PLAN STEP into a specific, machine-readable TOOL ACTION.
-
-    TIMELINE DATA (Contains Clip IDs):
-    ${timelineContext}
-
-    STEP TO EXECUTE:
-    Intent: "${step.intent}"
-    Reasoning: "${step.reasoning}"
-    Category: "${step.category}"
-    Timestamp: ${step.timestamp ?? 'Start of relevant clip'}
-
-    AVAILABLE TOOLS:
-    1. EDIT_TIMELINE_STATE (tool_id: "EDIT_TIMELINE")
-       - **PRIORITY**: Use this for ANY request that implies "Change", "Fix", "Move", "Remove", "Adjust", "Trim", "Volume".
-       - You MUST find the RELEVANT 'clipId' in the Timeline Data.
-       - Do NOT generate NEW clips if the goal is to modify existing ones.
-       - Operations: 'move', 'trim', 'volume', 'delete'.
-       
-    2. GENERATE_VOICEOVER (tool_id: "GENERATE_VOICEOVER")
-       - Use ONLY if the intent is explicitly to CREATE a NEW voiceover.
-       - Do NOT use to "fix" an existing voiceover (use EDIT_TIMELINE instead).
-       - Parameter 'action_content': WRITE THE FULL SCRIPT.
-    
-    3. GENERATE_TRANSITION (tool_id: "GENERATE_TRANSITION")
-       - Use to insert a NEW transition between clips.
-       - Parameter 'action_content': WRITE A VISUAL PROMPT.
-       
-    4. SMART_TRIM (tool_id: "SMART_TRIM")
-       - Use for general tightening if no specific ID is targetable.
-
-    INSTRUCTIONS:
-    - Analyze the intent.
-    - If the goal is "Fix overlap", "Adjust volume", or "Remove", YOU MUST USE 'EDIT_TIMELINE_STATE' targeting the specific clip IDs.
-    - Call 'suggest_ai_action' (wrapper) or 'edit_timeline_state'.
-    `;
-
-    try {
-        const response = await ai.models.generateContent({
-            model: 'gemini-3-flash-preview',
-            contents: { parts: [{ text: prompt }] },
-            config: {
-                // We allow both creation and editing tools
-                tools: [{ functionDeclarations: [suggestActionTool, editTimelineTool] }],
-                toolConfig: { functionCallingConfig: { mode: FunctionCallingConfigMode.ANY } } 
-            }
-        });
-
-        const functionCall = response.candidates?.[0]?.content?.parts?.find(p => p.functionCall)?.functionCall;
-        
-        if (functionCall) {
-            const args = functionCall.args as any;
-            
-            if (functionCall.name === 'edit_timeline_state') {
-                 return {
-                     tool_id: 'EDIT_TIMELINE',
-                     button_label: 'Apply Edits',
-                     reasoning: args.reasoning,
-                     parameters: { operations: args.operations }
-                 };
-            } else if (functionCall.name === 'suggest_ai_action') {
-                 return {
-                    tool_id: args.tool_id,
-                    button_label: args.button_label,
-                    reasoning: args.reasoning,
-                    timestamp: args.timestamp ?? step.timestamp,
-                    action_content: args.action_content,
-                    parameters: args.parameters
-                 };
-            }
-        }
-    } catch (e) {
-        console.error("Executor Error:", e);
-    }
-    return null;
-};
-
-// ... existing helper functions ...
+// ... helper functions ...
 export const generateRefinement = async (originalContext: string, toolType: 'VOICEOVER' | 'TRANSITION'): Promise<string> => {
     const ai = getAiClient();
     const prompt = toolType === 'VOICEOVER'
         ? `You previously suggested a voiceover with this reasoning: "${originalContext}". Write a short, engaging, professional script (max 2 sentences) for this voiceover. Return ONLY the raw text to be spoken. Do not include quotes or labels.`
         : `You previously suggested a video transition with this reasoning: "${originalContext}". Write a highly detailed visual prompt for an AI video generator to create this transition. Return ONLY the raw prompt text.`;
-    const response = await ai.models.generateContent({ model: 'gemini-3-flash-preview', contents: prompt });
+    
+    const response = await callWithRetry(() => ai.models.generateContent({ model: 'gemini-3-flash-preview', contents: prompt }));
     return response.text?.trim() || "";
 };
 
 export const determinePlacement = async (currentClips: Clip[], assetType: 'audio' | 'video', assetDuration: number, intentReasoning: string, proposedTimestamp?: number): Promise<PlacementDecision> => {
     const ai = getAiClient();
     const prompt = `Timeline: ${JSON.stringify(currentClips.map(c=>({id:c.id, t:c.type, s:c.startTime, d:c.duration})))}. User intent: "${intentReasoning}". New asset: ${assetType} (${assetDuration}s). Decision? JSON: {strategy, startTime, trackId, reasoning}`;
-    const response = await ai.models.generateContent({ model: "gemini-3-flash-preview", contents: prompt, config: { responseMimeType: "application/json" }});
+    const response = await callWithRetry(() => ai.models.generateContent({ model: "gemini-3-flash-preview", contents: prompt, config: { responseMimeType: "application/json" }}));
     return JSON.parse(response.text || "{}");
 };
 
@@ -414,13 +267,19 @@ export const analyzeVideoFrames = async (base64Frames: string[], prompt: string)
     const cleanData = frameData.split(',')[1] || frameData;
     parts.push({ inlineData: { mimeType: 'image/jpeg', data: cleanData }});
   });
-  const response = await ai.models.generateContent({ model: 'gemini-3-pro-preview', contents: { parts: parts }});
+  const response = await callWithRetry(() => ai.models.generateContent({ model: 'gemini-3-pro-preview', contents: { parts: parts }}));
   return response.text || "";
 };
 
 export const suggestEdits = async (currentClips: Clip[]): Promise<Suggestion[]> => { return []; };
-export const generateImage = async (prompt: string, model: string = 'gemini-2.5-flash-image', aspectRatio: string = '16:9'): Promise<string> => { return ""; };
-export const generateVideo = async (p: string, m: string = 'veo-3.1-fast-generate-preview', a: string = '16:9', r: string = '720p', d: number = 8, s?: string | null, e?: string | null): Promise<string> => { return ""; };
+export const generateImage = async (prompt: string, model: string = 'gemini-2.5-flash-image', aspectRatio: string = '16:9'): Promise<string> => { 
+    return ""; // Placeholder as not used in primary flow currently
+};
+export const generateVideo = async (p: string, m: string = 'veo-3.1-fast-generate-preview', a: string = '16:9', r: string = '720p', d: number = 8, s?: string | null, e?: string | null): Promise<string> => { 
+    // Video generation involves polling, custom retry logic typically needed for operations,
+    // but for start/wait pattern, standard retry on the initial call is useful.
+    return ""; 
+};
 
 const base64ToUint8Array = (base64: string) => {
   const binaryString = atob(base64);
@@ -461,7 +320,7 @@ const pcmToWav = (pcmData: Uint8Array, sampleRate: number, numChannels: number):
 
 export const generateSpeech = async (text: string, voiceName: string = 'Kore'): Promise<string> => {
     const ai = getAiClient();
-    const response = await ai.models.generateContent({
+    const response = await callWithRetry(() => ai.models.generateContent({
         model: "gemini-2.5-flash-preview-tts",
         contents: [{ parts: [{ text }] }],
         config: { 
@@ -472,7 +331,7 @@ export const generateSpeech = async (text: string, voiceName: string = 'Kore'): 
             }
           }
         }
-    });
+    }));
     const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data || "";
     const pcmData = base64ToUint8Array(base64Audio);
     return pcmToWav(pcmData, 24000, 1);

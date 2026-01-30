@@ -1,5 +1,8 @@
 {
   "name": "Copy of Copy of Copy of Cursor for Video (Demo)",
   "description": "A video editor interface demonstrating video understanding capabilities using Gemini 3 Pro.",
-  "requestFramePermissions": []
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
 }
