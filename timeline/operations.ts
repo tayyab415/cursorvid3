@@ -7,18 +7,19 @@ export const TimelineOps = {
   },
 
   rippleDelete: (store: TimelineStore, clipId: string) => {
-    const clips = store.getClips();
-    const clip = clips.find(c => c.id === clipId);
-    if (!clip) return;
+    store.batch(() => {
+        const clips = store.getClips();
+        const clip = clips.find(c => c.id === clipId);
+        if (!clip) return;
 
-    // Use a batch-like manual update to ensure one history step (conceptually)
-    // Here we just accept multiple history steps for simplicity or rely on store implementation
-    store.removeClip(clipId);
-    
-    // Shift clips on the same track
-    const clipsToShift = store.getClips().filter(c => c.trackId === clip.trackId && c.startTime > clip.startTime);
-    clipsToShift.forEach(c => {
-        store.updateClip(c.id, { startTime: Math.max(0, c.startTime - clip.duration) });
+        // 1. Remove the target clip
+        store.removeClip(clipId);
+        
+        // 2. Shift subsequent clips on the same track
+        const clipsToShift = store.getClips().filter(c => c.trackId === clip.trackId && c.startTime > clip.startTime);
+        clipsToShift.forEach(c => {
+            store.updateClip(c.id, { startTime: Math.max(0, c.startTime - clip.duration) });
+        });
     });
   },
 

@@ -4,6 +4,7 @@ export class TimelineStore {
   private clips: Clip[] = [];
   private history: { past: Clip[][]; future: Clip[][] } = { past: [], future: [] };
   private listeners = new Set<(clips: Clip[]) => void>();
+  private isBatching = false;
 
   constructor(initialClips: Clip[] = []) {
     this.clips = initialClips;
@@ -25,6 +26,10 @@ export class TimelineStore {
   }
 
   private saveHistory() {
+    // If we are in the middle of a batch operation, do not save intermediate states.
+    // The state was saved when batch() started.
+    if (this.isBatching) return;
+    
     this.history.past.push(JSON.parse(JSON.stringify(this.clips)));
     this.history.future = [];
   }
@@ -60,16 +65,19 @@ export class TimelineStore {
     this.notify();
   }
 
+  /**
+   * Groups multiple operations into a single history step.
+   * Useful for complex edits like Ripple Delete.
+   */
   batch(fn: () => void) {
-    this.saveHistory();
-    // We temporarily disable history saving in internal methods if needed, 
-    // but for simplicity, we just rely on the fact that 'saveHistory' pushes the current state.
-    // However, if fn() calls methods that saveHistory, we get intermediate states.
-    // For this simple implementation, we'll assume atomic operations are used mostly.
-    // A better approach for batch is to lock history.
-    const tempHistory = this.history; // Hack to prevent intermediate saves if we wanted to block them
-    fn();
-    // In a real app, we'd handle the 'transaction' better.
+    this.saveHistory(); // Snapshot current state before batch begins
+    this.isBatching = true;
+    try {
+      fn();
+    } finally {
+      this.isBatching = false;
+      this.notify(); // Single notification at the end
+    }
   }
 
   // --- History ---
