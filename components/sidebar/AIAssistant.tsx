@@ -1,10 +1,8 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Wand2, Clapperboard, Send, X, AlertTriangle, Loader2 } from 'lucide-react';
-import { Clip, ChatMessage, ToolAction, PlanStep, VideoIntent } from '../../types';
-import { chatWithGemini, performDeepAnalysis } from '../../services/gemini';
-import { rangeToGeminiParts } from '../../services/geminiAdapter';
+
+import React, { useState, useRef, useEffect } from 'react';
+import { Send, Loader2, Play, Eye, Brain, Hand, ShieldCheck, Terminal } from 'lucide-react';
+import { Clip, ChatMessage, ToolAction } from '../../types';
 import { ChatSuggestionCard } from './ChatSuggestionCard';
-import { PlanReviewCard } from './PlanReviewCard';
 
 interface AIAssistantProps {
   selectedClip: Clip | null;
@@ -13,130 +11,136 @@ interface AIAssistantProps {
   timelineRange: { start: number, end: number } | null;
   allClips: Clip[];
   mediaRefs: React.MutableRefObject<{[key: string]: HTMLVideoElement | HTMLAudioElement | null}>;
-  clipsRef: React.MutableRefObject<Clip[]>;
   onExecuteAction: (action: ToolAction) => Promise<void>;
-  onExecutePlan: (steps: PlanStep[]) => Promise<void>;
+  // Loop runner triggers
+  onRunAgentLoop: (message: string) => Promise<void>;
+  chatHistory: ChatMessage[];
+  isProcessing: boolean;
 }
 
 export const AIAssistant: React.FC<AIAssistantProps> = ({ 
     selectedClip, 
-    onRequestRangeSelect, 
-    isSelectingRange,
-    timelineRange,
     allClips,
-    mediaRefs,
-    clipsRef,
     onExecuteAction,
-    onExecutePlan
+    onRunAgentLoop,
+    chatHistory,
+    isProcessing
 }) => {
-  const [mode, setMode] = useState<'assist' | 'director'>('assist');
   const [assistQuery, setAssistQuery] = useState('');
-  const [activeScope, setActiveScope] = useState<any | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
-  const [videoIntent, setVideoIntent] = useState<VideoIntent | null>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
-  // ... (Scope logic same as before) ...
+  useEffect(() => {
+    if (scrollRef.current) {
+        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [chatHistory]);
 
-  const handleApplyAction = async (action: ToolAction) => {
-      setChatHistory(prev => [...prev, { role: 'system', text: `Applying ${action.button_label}...` }]);
-      await onExecuteAction(action);
+  const handleSendMessage = async () => {
+      if (!assistQuery.trim() || isProcessing) return;
+      const msg = assistQuery;
+      setAssistQuery('');
+      await onRunAgentLoop(msg);
   };
 
-  const handleExecutePlan = async (steps: PlanStep[]) => {
-      // Delegate to Orchestrator via App prop
-      await onExecutePlan(steps);
-  };
-
-  const processResponse = async (
-      currentHistory: ChatMessage[], 
-      messagePayload: any,
-      retryCount: number = 0
-  ) => {
-      if (retryCount > 2) return;
-
-      try {
-          const response = await chatWithGemini(
-              currentHistory.map(m => ({ role: m.role, text: m.text })), 
-              messagePayload,
-              videoIntent || undefined
-          );
-
-          if (response.intentUpdate) {
-              setVideoIntent(prev => ({ ...prev, ...response.intentUpdate }));
-          }
-
-          if (response.shouldAnalyze) {
-              // Analysis logic same as before, simplified for this snippet
-              const report = await performDeepAnalysis(await rangeToGeminiParts({ start:0, end:10, tracks:[] }, allClips, mediaRefs.current));
-              const systemReportMsg: ChatMessage = { role: 'system', text: `[ANALYSIS]:\n${report}` };
-              setChatHistory(prev => [...prev, systemReportMsg]);
-              await processResponse([...currentHistory, systemReportMsg], "Analysis done.", retryCount + 1);
-              return;
-          }
-
-          setChatHistory(prev => [...prev, { 
-              role: 'model', 
-              text: response.text, 
-              toolAction: response.toolAction,
-              plan: response.plan
-          }]);
-
-      } catch (e) {
-          console.error(e);
-          setChatHistory(prev => [...prev, { role: 'model', text: "Error connecting to Director agent." }]);
+  const getAgentIcon = (type?: string) => {
+      switch(type) {
+          case 'eyes': return <Eye size={14} className="text-blue-400" />;
+          case 'brain': return <Brain size={14} className="text-purple-400" />;
+          case 'hands': return <Hand size={14} className="text-emerald-400" />;
+          case 'verifier': return <ShieldCheck size={14} className="text-yellow-400" />;
+          case 'system': return <Terminal size={14} className="text-neutral-500" />;
+          default: return <Terminal size={14} className="text-neutral-500" />;
       }
   };
 
-  const handleSendMessage = async () => {
-      if (!assistQuery.trim()) return;
-      const userMessage = assistQuery;
-      setAssistQuery('');
-      setIsProcessing(true);
-      
-      const newHistory = [...chatHistory, { role: 'user' as const, text: userMessage }];
-      setChatHistory(newHistory);
+  const getAgentLabel = (type?: string) => {
+      switch(type) {
+          case 'eyes': return 'Perception';
+          case 'brain': return 'Planner';
+          case 'hands': return 'Execution';
+          case 'verifier': return 'Verifier';
+          case 'system': return 'System';
+          default: return 'System';
+      }
+  };
 
-      // Simple timeline summary for context
-      const timelineContext = `Timeline has ${allClips.length} clips. Total duration: ${allClips.reduce((acc,c)=>Math.max(acc,c.startTime+c.duration),0).toFixed(1)}s`;
-      const fullMessage = `${userMessage}\n\n[Context: ${timelineContext}]`;
-
-      try {
-          await processResponse(newHistory, fullMessage);
-      } finally {
-          setIsProcessing(false);
+  const getAgentColor = (type?: string) => {
+      switch(type) {
+          case 'eyes': return 'border-blue-500/30 bg-blue-950/20 text-blue-100';
+          case 'brain': return 'border-purple-500/30 bg-purple-950/20 text-purple-100';
+          case 'hands': return 'border-emerald-500/30 bg-emerald-950/20 text-emerald-100';
+          case 'verifier': return 'border-yellow-500/30 bg-yellow-950/20 text-yellow-100';
+          case 'system': return 'border-neutral-700/50 bg-neutral-900 text-neutral-400 font-mono text-[10px]';
+          default: return 'bg-neutral-800 text-neutral-200';
       }
   };
 
   return (
     <div className="flex flex-col h-full bg-neutral-900 border-l border-neutral-800 text-neutral-200 font-sans relative z-50">
-      <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
-          <div className="space-y-6">
-            {chatHistory.map((msg, i) => (
-                <div key={i} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
-                    {msg.text && (
-                        <div className={`max-w-[85%] p-3 rounded-2xl text-xs leading-relaxed whitespace-pre-wrap ${msg.role === 'user' ? 'bg-blue-600/20 text-blue-100' : 'bg-neutral-800'}`}>
-                            {msg.text}
-                        </div>
-                    )}
-                    {msg.toolAction && (
-                        <div className="w-[85%]">
-                            <ChatSuggestionCard action={msg.toolAction} onApply={handleApplyAction} />
-                        </div>
-                    )}
-                    {msg.plan && (
-                        <div className="w-full">
-                            <PlanReviewCard plan={msg.plan} onExecute={handleExecutePlan} />
-                        </div>
-                    )}
-                </div>
-            ))}
-            {isProcessing && <Loader2 size={16} className="animate-spin text-purple-400" />}
-          </div>
+      <div className="p-3 border-b border-neutral-800 bg-neutral-900 shadow-sm">
+          <h2 className="text-xs font-bold uppercase tracking-widest text-neutral-500 flex items-center gap-2">
+              <Brain size={12} /> Agent Loop
+          </h2>
       </div>
+
+      <div className="flex-1 overflow-y-auto p-4 custom-scrollbar space-y-4" ref={scrollRef}>
+          {chatHistory.length === 0 && (
+              <div className="text-center mt-10 opacity-50 space-y-2">
+                  <Brain size={32} className="mx-auto text-neutral-600" />
+                  <p className="text-xs text-neutral-400">Ready to edit.</p>
+              </div>
+          )}
+          
+          {chatHistory.map((msg, i) => {
+             const isAgent = msg.role === 'agent' || msg.role === 'system';
+             const isUser = msg.role === 'user';
+             
+             if (isUser) {
+                 return (
+                     <div key={i} className="flex justify-end">
+                         <div className="bg-blue-600/20 text-blue-100 border border-blue-500/20 rounded-2xl rounded-tr-sm px-4 py-2 text-sm max-w-[90%]">
+                             {msg.text}
+                         </div>
+                     </div>
+                 );
+             }
+
+             // Agent Message
+             return (
+                 <div key={i} className={`flex gap-3 animate-in fade-in slide-in-from-left-2 duration-300`}>
+                     <div className={`mt-0.5 shrink-0 w-6 h-6 rounded-full flex items-center justify-center border bg-neutral-800 border-neutral-700`}>
+                         {getAgentIcon(msg.agentType)}
+                     </div>
+                     <div className="flex-1 space-y-1">
+                         <div className="flex items-center gap-2">
+                             <span className={`text-[10px] font-bold uppercase tracking-wider ${msg.agentType === 'system' ? 'text-neutral-500' : 'text-neutral-300'}`}>
+                                 {getAgentLabel(msg.agentType)}
+                             </span>
+                             {msg.agentType === 'verifier' && <span className="text-[10px] text-yellow-500/50">Checking safety...</span>}
+                         </div>
+                         <div className={`rounded-xl px-3 py-2 text-xs border ${getAgentColor(msg.agentType)}`}>
+                             {msg.text}
+                         </div>
+                         {msg.toolAction && (
+                            <div className="mt-2">
+                                <ChatSuggestionCard action={msg.toolAction} onApply={onExecuteAction} />
+                            </div>
+                         )}
+                     </div>
+                 </div>
+             );
+          })}
+          
+          {isProcessing && (
+              <div className="flex items-center gap-2 text-xs text-neutral-500 animate-pulse pl-9">
+                  <Loader2 size={10} className="animate-spin" /> Thinking...
+              </div>
+          )}
+      </div>
+
       <div className="p-3 border-t border-neutral-800 bg-neutral-900">
-          <div className="relative flex items-center bg-neutral-950 border border-neutral-800 rounded-2xl px-2 py-1">
+          <div className="relative flex items-center bg-neutral-950 border border-neutral-800 rounded-2xl px-2 py-1 focus-within:border-purple-500/50 transition-colors">
             <input
               ref={inputRef}
               type="text"
@@ -144,10 +148,10 @@ export const AIAssistant: React.FC<AIAssistantProps> = ({
               onChange={(e) => setAssistQuery(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
               disabled={isProcessing}
-              placeholder="Ask the Director..."
-              className="flex-1 bg-transparent border-none outline-none text-xs text-white placeholder:text-neutral-600 py-2 min-w-[50px]"
+              placeholder="Trim silence, add subtitles..."
+              className="flex-1 bg-transparent border-none outline-none text-xs text-white placeholder:text-neutral-600 py-2 min-w-[50px] px-2"
             />
-            <button onClick={handleSendMessage} disabled={isProcessing} className="p-2 hover:bg-neutral-800 rounded-xl text-purple-400 transition-colors shrink-0 disabled:opacity-50">
+            <button onClick={handleSendMessage} disabled={isProcessing || !assistQuery.trim()} className="p-2 hover:bg-neutral-800 rounded-xl text-purple-400 transition-colors shrink-0 disabled:opacity-30 disabled:cursor-not-allowed">
               <Send size={14} />
             </button>
           </div>

@@ -1,7 +1,7 @@
 import { PlanStep } from '../../types';
 import { timelineStore } from '../../timeline/store';
 import { ExecutorAgent } from './executor';
-import { VerifierAgent, VerificationResult } from './verifier';
+import { VerifierAgent, VerifierOutput } from './verifier';
 import { TIMELINE_PRIMITIVES } from '../timelinePrimitives';
 import { getAiClient } from '../gemini';
 import { FunctionCallingConfigMode } from '@google/genai';
@@ -70,6 +70,12 @@ export class OrchestratorAgent {
         onProgress(`Issue detected. Attempting auto-fix for: ${step.intent}`);
         const retryStep = await this.generateFixStep(step, verification);
         
+        // Extract issues manually since VerifierOutput structure separates them
+        const issues = [
+            ...(verification.checks.structural.issues || []),
+            !verification.checks.intentAlignment.passed ? verification.checks.intentAlignment.reasoning : null
+        ].filter(Boolean) as string[];
+
         if (retryStep) {
           try {
               const retryResult = await this.executeStep(retryStep);
@@ -77,16 +83,16 @@ export class OrchestratorAgent {
                    results.push({ 
                         step, 
                         status: 'success_after_retry',
-                        issues: verification.issues
+                        issues: issues
                    });
               } else {
-                   results.push({ step, status: 'failed_retry', issues: verification.issues });
+                   results.push({ step, status: 'failed_retry', issues: issues });
               }
           } catch (e) {
-               results.push({ step, status: 'failed_retry_exception', issues: verification.issues });
+               results.push({ step, status: 'failed_retry_exception', issues: issues });
           }
         } else {
-          results.push({ step, status: 'failed_verification', issues: verification.issues });
+          results.push({ step, status: 'failed_verification', issues: issues });
         }
       }
     }
@@ -148,11 +154,16 @@ export class OrchestratorAgent {
     }
   }
   
-  private async generateFixStep(originalStep: PlanStep, verification: VerificationResult): Promise<PlanStep | null> {
+  private async generateFixStep(originalStep: PlanStep, verification: VerifierOutput): Promise<PlanStep | null> {
+    const issues = [
+        ...(verification.checks.structural.issues || []),
+        !verification.checks.intentAlignment.passed ? verification.checks.intentAlignment.reasoning : null
+    ].filter(Boolean) as string[];
+
     const ai = getAiClient();
     const prompt = `
     You attempted: "${originalStep.intent}"
-    Issues detected: ${verification.issues?.join(', ')}
+    Issues detected: ${issues.join(', ')}
     Suggestion: ${verification.suggestion}
 
     Generate a corrective step (intent and reasoning). 

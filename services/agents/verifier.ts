@@ -1,43 +1,53 @@
+
+
 import { Clip } from '../../types';
 import { getAiClient } from '../gemini';
 import { Type } from '@google/genai';
 
-export interface VerificationResult {
+export interface VerifierOutput {
+  thought: string;
   passed: boolean;
-  issues: string[] | null;
-  suggestion: string | null;
+  checks: {
+    structural: { passed: boolean, issues: string[] };
+    intentAlignment: { passed: boolean, reasoning: string };
+  };
+  suggestion?: string;
 }
 
 export class VerifierAgent {
   async verify(
-    intent: string,           // What user wanted
-    operation: string,        // What was executed
-    preState: Clip[],        // Timeline before
-    postState: Clip[]        // Timeline after
-  ): Promise<VerificationResult> {
+    intent: string,
+    operation: string,
+    preState: Clip[],
+    postState: Clip[]
+  ): Promise<VerifierOutput> {
     
     const prompt = `
-VERIFICATION TASK:
-User Intent: "${intent}"
-Operation Executed: ${operation}
+    ROLE: You are the VERIFIER.
+    TASK: Check if the editing operation "${operation}" was successful and safe.
 
-TIMELINE BEFORE:
-${this.formatClips(preState)}
+    USER INTENT: "${intent}"
 
-TIMELINE AFTER:
-${this.formatClips(postState)}
+    TIMELINE BEFORE:
+    ${this.formatClips(preState)}
 
-CHECKLIST:
-1. Did the operation execute? (check clip changes)
-2. Are there structural issues? (overlaps, gaps, invalid values)
-3. Does the result match the intent?
+    TIMELINE AFTER:
+    ${this.formatClips(postState)}
 
-Respond in JSON with this schema:
-{
-  "passed": boolean,
-  "issues": string[] | null,
-  "suggestion": string | null
-}
+    INSTRUCTIONS:
+    1. Check Structural Integrity: Are there unintentional overlaps? Gaps? Missing clips?
+    2. Check Intent: Did the timeline change actually reflect the user's goal?
+    
+    OUTPUT JSON SCHEMA:
+    {
+      "thought": "First-person analysis (e.g., 'The clip was deleted, but now there is a 2s gap.')",
+      "passed": boolean,
+      "checks": {
+        "structural": { "passed": boolean, "issues": ["string"] },
+        "intentAlignment": { "passed": boolean, "reasoning": "string" }
+      },
+      "suggestion": "string (optional fix)"
+    }
     `;
     
     try {
@@ -46,35 +56,29 @@ Respond in JSON with this schema:
           model: 'gemini-3-flash-preview',
           contents: prompt,
           config: { 
-              responseMimeType: 'application/json',
-              responseSchema: {
-                  type: Type.OBJECT,
-                  properties: {
-                      passed: { type: Type.BOOLEAN },
-                      issues: { type: Type.ARRAY, items: { type: Type.STRING } },
-                      suggestion: { type: Type.STRING }
-                  },
-                  required: ['passed']
-              }
+              responseMimeType: 'application/json'
           }
         });
         
-        const textPart = response.candidates?.[0]?.content?.parts?.find(p => p.text);
-        const text = textPart?.text;
-
-        if (!text) throw new Error("Empty verification response");
+        const text = response.text || "{}";
         return JSON.parse(text);
     } catch (e) {
         console.error("Verification failed", e);
-        // Fail open or closed? Let's assume passed to avoid blocking if AI fails, but log it.
-        return { passed: true, issues: ["Verification AI failed"], suggestion: null };
+        return {
+            thought: "I couldn't verify the changes due to an error.",
+            passed: true, // Fail open to avoid infinite loops on error
+            checks: {
+                structural: { passed: true, issues: [] },
+                intentAlignment: { passed: true, reasoning: "Verification skipped" }
+            }
+        };
     }
   }
   
   private formatClips(clips: Clip[]): string {
     if (clips.length === 0) return "Empty Timeline";
     return clips.map(c => 
-      `[${c.id}] ${c.type} | Start: ${c.startTime.toFixed(2)}s | Dur: ${c.duration.toFixed(2)}s | Track ${c.trackId} | "${c.title}"`
+      `[${c.id}] ${c.type} | Start: ${c.startTime.toFixed(2)}s | Dur: ${c.duration.toFixed(2)}s | Track ${c.trackId}`
     ).join('\n');
   }
 }

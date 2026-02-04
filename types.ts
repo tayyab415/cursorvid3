@@ -38,6 +38,8 @@ export interface PlanStep {
   reasoning: string;
   timestamp?: number;
   status: 'pending' | 'approved' | 'rejected';
+  operation?: string;
+  parameters?: any;
 }
 
 export interface EditPlan {
@@ -76,12 +78,13 @@ export interface ToolAction {
 }
 
 export interface ChatMessage {
-  role: 'user' | 'model' | 'system';
+  role: 'user' | 'model' | 'system' | 'agent';
   text: string;
   suggestions?: Suggestion[];
   toolAction?: ToolAction; // For single-hit actions
   plan?: EditPlan;         // For the Orchestrator workflow
   intentUpdate?: VideoIntent; // When the model infers new intent
+  agentType?: 'eyes' | 'brain' | 'hands' | 'verifier' | 'system';
 }
 
 export interface Suggestion {

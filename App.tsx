@@ -2,13 +2,24 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Timeline } from './components/Timeline';
 import { CanvasControls } from './components/CanvasControls';
 import { AIAssistant } from './components/sidebar/AIAssistant';
-import { Clip, ChatMessage, Suggestion, ToolAction, PlanStep } from './types';
-import { generateImage, generateVideo, generateSpeech, determinePlacement, generateRefinement } from './services/gemini';
-import { extractAudioFromVideo, captureFrameFromVideoUrl } from './utils/videoUtils';
-import { Video, Wand2, Play, Pause, Loader2, Upload, RotateCcw, RotateCw, Sparkles, Scissors, Gauge, Download, Volume2, VolumeX, X, Image as ImageIcon, Film, Mic, Camera, Trash2, Info, Captions, Type, Bold, Italic, Underline, AlignCenter, AlignLeft, AlignRight, Check, ChevronLeft } from 'lucide-react';
+import { Clip, ChatMessage, ToolAction } from './types';
+import { generateImage, generateVideo, generateSpeech, determinePlacement } from './services/gemini';
+import { captureFrameFromVideoUrl, extractAudioFromVideo } from './utils/videoUtils';
+import { 
+  Video, Wand2, Play, Pause, Loader2, Upload, RotateCcw, RotateCw, 
+  Sparkles, Scissors, Gauge, Download, Volume2, VolumeX, X, 
+  Image as ImageIcon, Film, Mic, Camera, Trash2, Info, Captions, 
+  Type, Bold, Italic, Underline, AlignCenter, AlignLeft, AlignRight, 
+  Check, ChevronLeft 
+} from 'lucide-react';
 import { timelineStore } from './timeline/store';
-import { OrchestratorAgent } from './services/agents/orchestrator';
-import { ExecutorAgent } from './services/agents/executor';
+
+// AGENTS
+import { AgenticLoop } from './services/agents/loopRunner';
+import { EyesAgent } from './services/agents/eyes';
+import { BrainAgent } from './services/agents/brain';
+import { HandsAgent } from './services/agents/hands';
+import { VerifierAgent } from './services/agents/verifier';
 
 const DEFAULT_TEXT_STYLE = {
     fontFamily: 'Plus Jakarta Sans',
@@ -342,8 +353,14 @@ const TextControls = ({ values, onChange }: { values: any, onChange: (updates: a
 );
 const GeminiLogo = ({ className = "w-6 h-6" }: { className?: string }) => (
     <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
-        <path d="M16 3C16 3 16.0375 8.525 21.0625 10.9375C16.0375 13.35 16 19 16 19C16 19 15.9625 13.35 11 11C15.9625 8.525 16 3 16 3Z" fill="#4E75F6" />
-        <path d="M4 11C4 11 4.5 13.5 7 14.5C4.5 15.5 4 18 4 18C4 18 3.5 15.5 1 14.5C3.5 13.5 4 11 4 11Z" fill="#E93F33" />
+        <path d="M16 3C16 3 16.0375 8.525 21.0625 10.9375C16.0375 13.35 16 19 16 19C16 19 15.9625 13.35 11 11C15.9625 8.525 16 3 16 3Z" fill="url(#gemini-gradient)" />
+        <path d="M4 11C4 11 4.5 13.5 7 14.5C4.5 15.5 4 18 4 18C4 18 3.5 15.5 1 14.5C3.5 13.5 4 11 4 11Z" fill="url(#gemini-gradient)" />
+        <defs>
+            <linearGradient id="gemini-gradient" x1="1" y1="3" x2="21" y2="19" gradientUnits="userSpaceOnUse">
+                <stop stopColor="#4E75F6" />
+                <stop offset="1" stopColor="#E93F33" />
+            </linearGradient>
+        </defs>
     </svg>
 );
 
@@ -390,7 +407,6 @@ export default function App() {
   const [rangeModalOpen, setRangeModalOpen] = useState(false);
   const [executionStatus, setExecutionStatus] = useState<string | null>(null);
 
-  const [transitionModal, setTransitionModal] = useState<any>({ active: false });
   const [isGenerating, setIsGenerating] = useState(false);
   const [genPrompt, setGenPrompt] = useState('');
   const [imgModel, setImgModel] = useState('gemini-2.5-flash-image');
@@ -404,6 +420,10 @@ export default function App() {
   const [veoEndImg, setVeoEndImg] = useState<string | null>(null);
   const [uploadTarget, setUploadTarget] = useState<'start'|'end'>('start');
   const [audioVoice, setAudioVoice] = useState('Kore');
+  
+  // CHAT STATE
+  const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
+  const [isProcessing, setIsProcessing] = useState(false);
 
   const containerRef = useRef<HTMLDivElement>(null); 
   const canvasRef = useRef<HTMLCanvasElement>(null); 
@@ -427,33 +447,44 @@ export default function App() {
   const veoModeColor = veoStartImg && veoEndImg ? 'text-purple-300 bg-purple-900/50 border-purple-500/50' : veoStartImg ? 'text-blue-300 bg-blue-900/50 border-blue-500/50' : 'text-neutral-400 bg-neutral-800 border-neutral-700';
 
   // --- AGENTS ---
-  const orchestrator = new OrchestratorAgent();
-  const executor = new ExecutorAgent(); // For single actions
+  const eyes = new EyesAgent();
+  const brain = new BrainAgent();
+  const hands = new HandsAgent();
+  const verifier = new VerifierAgent();
+  
+  const loop = new AgenticLoop(
+    eyes,
+    brain,
+    hands,
+    verifier,
+    (agent, thought) => {
+        setChatHistory(prev => [...prev, {
+            role: 'agent',
+            agentType: agent,
+            text: thought
+        }]);
+    }
+  );
 
-  const handleExecutePlan = async (steps: PlanStep[]) => {
-      setExecutionStatus("Starting Execution...");
-      try {
-        const report = await orchestrator.executePlanWithVerification(
-            steps,
-            (status) => setExecutionStatus(status)
-        );
-        console.log("Execution Report", report);
-        const successCount = report.results.filter(r => r.status.includes('success')).length;
-        setExecutionStatus(`Done. Applied ${successCount}/${steps.length} changes.`);
-        setTimeout(() => setExecutionStatus(null), 3000);
-      } catch (e) {
-          console.error("Plan Execution Error", e);
-          setExecutionStatus("Execution Failed. Check Console.");
-          setTimeout(() => setExecutionStatus(null), 3000);
-      }
+  const handleRunAgentLoop = async (message: string) => {
+    setIsProcessing(true);
+    setChatHistory(prev => [...prev, { role: 'user', text: message }]);
+    try {
+        await loop.run(message, timelineStore.getClips(), mediaRefs.current);
+    } catch (e) {
+        setChatHistory(prev => [...prev, { role: 'system', text: "Agent loop failed unexpectedly." }]);
+    } finally {
+        setIsProcessing(false);
+    }
   };
 
   const handleExecuteAIAction = async (action: ToolAction) => {
+      // Legacy or direct tool actions could be routed through Hands
       setIsGenerating(true);
-      // Map ToolAction back to primitive execution
-      await executor.execute({
-          name: action.tool_id.toLowerCase(), // Mapped back to function name if possible, or handle specifically
-          args: action.parameters
+      await hands.execute({ 
+          operation: action.tool_id.toLowerCase(), 
+          parameters: action.parameters, 
+          intent: action.reasoning 
       });
       setIsGenerating(false);
   };
@@ -901,12 +932,6 @@ export default function App() {
           </div>
         </div>
         <aside className="w-80 border-l border-neutral-800 bg-neutral-900 flex flex-col z-[150] relative">
-          {/* executionStatus Overlay */}
-          {executionStatus && (
-              <div className="absolute top-0 left-0 right-0 bg-purple-600 text-white text-xs py-1 px-2 z-[200] font-mono text-center shadow-lg animate-in slide-in-from-top-2 duration-200">
-                  {executionStatus}
-              </div>
-          )}
           <AIAssistant 
             selectedClip={primarySelectedClip} 
             onRequestRangeSelect={() => {}}
@@ -914,9 +939,10 @@ export default function App() {
             timelineRange={liveScopeRange}
             allClips={clips}
             mediaRefs={mediaRefs}
-            clipsRef={clipsRef}
             onExecuteAction={handleExecuteAIAction}
-            onExecutePlan={handleExecutePlan}
+            onRunAgentLoop={handleRunAgentLoop}
+            chatHistory={chatHistory}
+            isProcessing={isProcessing}
           />
         </aside>
       </div>
