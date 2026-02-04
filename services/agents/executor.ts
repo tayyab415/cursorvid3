@@ -1,3 +1,4 @@
+
 import { timelineStore } from '../../timeline/store';
 import { TimelineOps } from '../../timeline/operations';
 import { generateSpeech } from '../gemini'; 
@@ -23,7 +24,7 @@ export class ExecutorAgent {
             timelineStore, 
             args.clipId, 
             args.property, 
-            Number(args.value) // Ensure value is number if supposed to be
+            Number(args.value) 
           );
           break;
           
@@ -35,9 +36,44 @@ export class ExecutorAgent {
           TimelineOps.trimClip(timelineStore, args.clipId, Number(args.newDuration));
           break;
 
+        case 'split_clip':
+          TimelineOps.splitClip(timelineStore, args.clipId, Number(args.splitTime));
+          break;
+
+        case 'apply_visual_transform':
+          TimelineOps.updateClipProperty(timelineStore, args.clipId, 'transform', {
+              scale: Number(args.scale || 1),
+              x: Number(args.x || 0),
+              y: Number(args.y || 0),
+              rotation: Number(args.rotation || 0)
+          });
+          break;
+
+        case 'add_text_overlay':
+          const stylePreset = args.style || 'subtitle';
+          const isTitle = stylePreset === 'title';
+          
+          const textStyle = isTitle 
+              ? { fontSize: 60, isBold: true, isItalic: false, isUnderline: false, align: 'center', color: '#ffffff', backgroundColor: '#000000', backgroundOpacity: 0.0, fontFamily: 'Plus Jakarta Sans' }
+              : { fontSize: 30, isBold: true, isItalic: false, isUnderline: false, align: 'center', color: '#ffffff', backgroundColor: '#000000', backgroundOpacity: 0.6, fontFamily: 'Plus Jakarta Sans' };
+          
+          const textClip: Clip = {
+              id: `txt-${Date.now()}`,
+              title: args.text.slice(0, 15),
+              type: 'text',
+              text: args.text,
+              startTime: Number(args.startTime),
+              duration: Number(args.duration),
+              sourceStartTime: 0,
+              trackId: 3, 
+              textStyle: textStyle as any,
+              transform: { x: 0, y: isTitle ? 0 : 0.35, scale: 1, rotation: 0 } 
+          };
+          TimelineOps.addClip(timelineStore, textClip);
+          return { success: true, operation: name, clipId: textClip.id };
+
         case 'generate_voiceover':
           const audioUrl = await generateSpeech(args.text, 'Kore');
-          // Create a temp audio element to get duration
           const tempAudio = new Audio(audioUrl);
           await new Promise<void>((resolve) => {
              tempAudio.onloadedmetadata = () => resolve();

@@ -43,12 +43,18 @@ export class BrainAgent {
     
     INSTRUCTIONS:
     1. Break the task into 1-5 atomic steps.
-    2. Each step MUST map to a function: update_clip_property, ripple_delete, generate_voiceover, smart_trim.
+    2. Each step MUST map to a function: 
+       - update_clip_property (move, resize, volume, speed, track)
+       - apply_visual_transform (zoom, pan, scale, crop, rotate)
+       - ripple_delete (remove clip and close gap)
+       - split_clip (cut a clip in half)
+       - generate_voiceover (create audio)
+       - add_text_overlay (add subtitles, titles)
     3. Be specific with timestamps and values.
     
     OUTPUT JSON SCHEMA:
     {
-        "thought": "First-person reasoning (e.g., 'Since the user wants it faster, I will trim the silent start...')",
+        "thought": "First-person reasoning...",
         "plan": {
             "goal": "High level goal",
             "reasoning": "Why this plan works",
@@ -71,8 +77,6 @@ export class BrainAgent {
             contents: prompt,
             config: {
                 responseMimeType: 'application/json',
-                // We provide tools just for context/schema understanding, 
-                // but we want the LLM to output JSON describing the calls, not make the calls yet.
                 tools: [{ functionDeclarations: TIMELINE_PRIMITIVES }], 
             }
         });

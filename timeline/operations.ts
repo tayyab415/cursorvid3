@@ -1,3 +1,4 @@
+
 import { TimelineStore } from './store';
 import { Clip } from '../types';
 
@@ -32,6 +33,10 @@ export const TimelineOps = {
     if (clip) {
         store.moveClip(clipId, startTime, trackId ?? clip.trackId);
     }
+  },
+
+  splitClip: (store: TimelineStore, clipId: string, splitTime: number) => {
+    store.splitClip(clipId, splitTime);
   },
 
   addClip: (store: TimelineStore, clip: Clip) => {

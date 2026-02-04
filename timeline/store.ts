@@ -1,3 +1,4 @@
+
 import { Clip } from '../types';
 
 export class TimelineStore {
@@ -62,6 +63,37 @@ export class TimelineStore {
   moveClip(id: string, startTime: number, trackId: number) {
     this.saveHistory();
     this.clips = this.clips.map(c => c.id === id ? { ...c, startTime, trackId } : c);
+    this.notify();
+  }
+
+  splitClip(id: string, splitTime: number) {
+    this.saveHistory();
+    const original = this.clips.find(c => c.id === id);
+    if (!original) return;
+
+    // Check bounds
+    if (splitTime <= original.startTime || splitTime >= original.startTime + original.duration) {
+      console.warn("Split time out of bounds for clip", id);
+      return;
+    }
+
+    const offset = splitTime - original.startTime;
+    const speed = original.speed || 1;
+
+    // Create the second half
+    const newClip: Clip = {
+      ...JSON.parse(JSON.stringify(original)), // Deep copy
+      id: `split-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      startTime: splitTime,
+      duration: original.duration - offset,
+      sourceStartTime: original.sourceStartTime + (offset * speed)
+    };
+
+    // Update the first half
+    this.updateClip(id, { duration: offset });
+    
+    // Add the second half
+    this.clips = [...this.clips, newClip];
     this.notify();
   }
 

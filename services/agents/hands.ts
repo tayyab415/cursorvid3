@@ -41,6 +41,45 @@ export class HandsAgent {
           changes.push(`Trimmed ${parameters.clipId} to ${parameters.newDuration}s`);
           break;
 
+        case 'split_clip':
+          TimelineOps.splitClip(timelineStore, parameters.clipId, Number(parameters.splitTime));
+          changes.push(`Split clip ${parameters.clipId} at ${parameters.splitTime}s`);
+          break;
+
+        case 'apply_visual_transform':
+          TimelineOps.updateClipProperty(timelineStore, parameters.clipId, 'transform', {
+              scale: Number(parameters.scale || 1),
+              x: Number(parameters.x || 0),
+              y: Number(parameters.y || 0),
+              rotation: Number(parameters.rotation || 0)
+          });
+          changes.push(`Applied transform to ${parameters.clipId}: scale ${parameters.scale}x`);
+          break;
+
+        case 'add_text_overlay':
+          const stylePreset = parameters.style || 'subtitle';
+          const isTitle = stylePreset === 'title';
+          
+          const textStyle = isTitle 
+              ? { fontSize: 60, isBold: true, isItalic: false, isUnderline: false, align: 'center', color: '#ffffff', backgroundColor: '#000000', backgroundOpacity: 0.0, fontFamily: 'Plus Jakarta Sans' }
+              : { fontSize: 30, isBold: true, isItalic: false, isUnderline: false, align: 'center', color: '#ffffff', backgroundColor: '#000000', backgroundOpacity: 0.6, fontFamily: 'Plus Jakarta Sans' };
+          
+          const textClip: Clip = {
+              id: `txt-${Date.now()}`,
+              title: parameters.text.slice(0, 15),
+              type: 'text',
+              text: parameters.text,
+              startTime: Number(parameters.startTime),
+              duration: Number(parameters.duration),
+              sourceStartTime: 0,
+              trackId: 3, 
+              textStyle: textStyle as any,
+              transform: { x: 0, y: isTitle ? 0 : 0.35, scale: 1, rotation: 0 } 
+          };
+          TimelineOps.addClip(timelineStore, textClip);
+          changes.push(`Added text "${parameters.text.slice(0, 20)}..." at ${parameters.startTime}s`);
+          break;
+
         case 'generate_voiceover':
           // Hands can use tools (API calls) but doesn't "think" about content
           const audioUrl = await generateSpeech(parameters.text, 'Kore');
