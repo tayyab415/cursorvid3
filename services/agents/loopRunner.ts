@@ -12,7 +12,8 @@ export class AgenticLoop {
     private brain: BrainAgent,
     private hands: HandsAgent,
     private verifier: VerifierAgent,
-    private onThought: (agent: 'eyes' | 'brain' | 'hands' | 'verifier' | 'system', thought: string, action?: ToolAction) => void
+    private onThought: (agent: 'eyes' | 'brain' | 'hands' | 'verifier' | 'system', thought: string, action?: ToolAction) => void,
+    private onRequestObservation?: () => Promise<string[]>
   ) {}
 
   // Phase 1: Analyze & Plan
@@ -89,7 +90,15 @@ export class AgenticLoop {
   // Phase 3: Verify Whole Plan
   async verify(originalIntent: string, preState: Clip[], postState: Clip[]) {
       this.onThought('system', "✅ Activating Verification...");
-      const verification = await this.verifier.verify(originalIntent, "Plan Execution", preState, postState);
+      
+      let visualEvidence: string[] = [];
+      if (this.onRequestObservation) {
+          this.onThought('verifier', "I need to watch the video to ensure quality. Starting playback...");
+          visualEvidence = await this.onRequestObservation();
+          this.onThought('verifier', `I have watched the video and captured ${visualEvidence.length} frames for analysis.`);
+      }
+
+      const verification = await this.verifier.verify(originalIntent, "Plan Execution", preState, postState, visualEvidence);
       this.onThought('verifier', verification.thought);
       
       if (verification.passed) {
@@ -103,6 +112,17 @@ export class AgenticLoop {
           if (issues.length > 0) {
               const formattedIssues = issues.map(i => `• ${i}`).join('\n');
               this.onThought('system', `⚠️ Verification Issues Found:\n${formattedIssues}`);
+          }
+
+          // Generate a Correction Proposal if remediation is available
+          if (verification.remediation) {
+              const fixAction: ToolAction = {
+                  tool_id: 'REPLAN_REQUEST',
+                  button_label: 'Auto-Fix Issues',
+                  reasoning: `I can fix this automatically: "${verification.remediation}"`,
+                  parameters: { prompt: verification.remediation }
+              };
+              this.onThought('verifier', "I have a plan to fix these issues.", fixAction);
           }
       }
       return verification;

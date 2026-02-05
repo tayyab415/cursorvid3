@@ -4,14 +4,14 @@ import { Timeline } from './components/Timeline';
 import { CanvasControls } from './components/CanvasControls';
 import { AIAssistant } from './components/sidebar/AIAssistant';
 import { Clip, ChatMessage, ToolAction, EditPlan } from './types';
-import { generateImage, generateVideo, generateSpeech, determinePlacement } from './services/gemini';
-import { captureFrameFromVideoUrl, extractAudioFromVideo } from './utils/videoUtils';
+import { generateImage, generateVideo, generateSpeech } from './services/gemini';
+import { extractAudioFromVideo } from './utils/videoUtils';
 import { 
-  Video, Wand2, Play, Pause, Loader2, Upload, RotateCcw, RotateCw, 
+  Video, Play, Pause, Loader2, Upload, RotateCcw, RotateCw, 
   Sparkles, Scissors, Gauge, Download, Volume2, VolumeX, X, 
   Image as ImageIcon, Film, Mic, Camera, Trash2, Info, Captions, 
   Type, Bold, Italic, Underline, AlignCenter, AlignLeft, AlignRight, 
-  Check, ChevronLeft, Bot, Palette
+  Check, ChevronLeft, ShieldCheck 
 } from 'lucide-react';
 import { timelineStore } from './timeline/store';
 
@@ -352,6 +352,7 @@ const TextControls = ({ values, onChange }: { values: any, onChange: (updates: a
          </div>
     </div>
 );
+
 const GeminiLogo = ({ className = "w-6 h-6" }: { className?: string }) => (
     <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
         <path d="M16 3C16 3 16.0375 8.525 21.0625 10.9375C16.0375 13.35 16 19 16 19C16 19 15.9625 13.35 11 11C15.9625 8.525 16 3 16 3Z" fill="url(#gemini-gradient)" />
@@ -365,7 +366,6 @@ const GeminiLogo = ({ className = "w-6 h-6" }: { className?: string }) => (
     </svg>
 );
 
-// --- UPDATED: CONSISTENT GENERATION APPROVAL MODAL ---
 const GenerationApprovalModal = ({ 
     isOpen, 
     onClose, 
@@ -525,22 +525,37 @@ const GenerationApprovalModal = ({
     );
 };
 
+// --- HELPER FOR TRACK SAFETY ---
+const getSafeTrackId = (preferredTrack: number, clips: Clip[]): number => {
+    if (clips.length === 0) return preferredTrack;
+    const maxTrack = Math.max(...clips.map(c => c.trackId));
+    if (preferredTrack === 0) return Math.max(1, maxTrack + 1);
+    return preferredTrack;
+};
 
 export default function App() {
   const [tracks, setTracks] = useState<number[]>([0, 1, 2, 3]);
-
-  // Use Store for Clips (Single Source of Truth)
   const [clips, setClips] = useState<Clip[]>(timelineStore.getClips());
   
+  useEffect(() => { return timelineStore.subscribe(setClips); }, []);
   useEffect(() => {
-    return timelineStore.subscribe(setClips);
-  }, []);
+      if (clips.length === 0) return;
+      const maxTrackInClips = Math.max(...clips.map(c => c.trackId));
+      setTracks(prev => {
+          const currentMax = Math.max(...prev);
+          if (maxTrackInClips > currentMax) {
+              const newTracks = [...prev];
+              for (let i = currentMax + 1; i <= maxTrackInClips; i++) newTracks.push(i);
+              return newTracks;
+          }
+          return prev;
+      });
+  }, [clips]);
 
   const clipsRef = useRef(clips);
   useEffect(() => { clipsRef.current = clips; }, [clips]);
 
   const [selectedClipIds, setSelectedClipIds] = useState<string[]>([]);
-  const clipboardRef = useRef<Clip[]>([]);
   
   const [showSpeedMenu, setShowSpeedMenu] = useState(false);
   const [isCustomSpeed, setIsCustomSpeed] = useState(false);
@@ -552,6 +567,8 @@ export default function App() {
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isVerifying, setIsVerifying] = useState(false);
+
   const togglePlay = useCallback(() => setIsPlaying(p => !p), []);
 
   const [currentTime, setCurrentTime] = useState(0); 
@@ -586,7 +603,6 @@ export default function App() {
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   
-  // EXECUTION QUEUE STATE (For Multi-step plans)
   const [activePlan, setActivePlan] = useState<EditPlan | null>(null);
   const [currentStepIndex, setCurrentStepIndex] = useState(0);
   const [pendingApproval, setPendingApproval] = useState<{ tool: string, params: any } | null>(null);
@@ -597,6 +613,8 @@ export default function App() {
   const referenceImageInputRef = useRef<HTMLInputElement>(null);
   const mediaRefs = useRef<{[key: string]: HTMLVideoElement | HTMLAudioElement | null}>({});
   const currentTimeRef = useRef(currentTime);
+
+  useEffect(() => { currentTimeRef.current = currentTime; }, [currentTime]);
 
   const selectedClips = clips.filter(c => selectedClipIds.includes(c.id));
   const primarySelectedClip = selectedClips.length > 0 ? selectedClips[selectedClips.length - 1] : null;
@@ -612,358 +630,24 @@ export default function App() {
   const veoModeLabel = veoStartImg && veoEndImg ? 'Morph Mode' : veoStartImg ? 'Image-to-Video' : 'Text-to-Video';
   const veoModeColor = veoStartImg && veoEndImg ? 'text-purple-300 bg-purple-900/50 border-purple-500/50' : veoStartImg ? 'text-blue-300 bg-blue-900/50 border-blue-500/50' : 'text-neutral-400 bg-neutral-800 border-neutral-700';
 
-  // --- AGENTS ---
-  const eyes = new EyesAgent();
-  const brain = new BrainAgent();
-  const hands = new HandsAgent();
-  const verifier = new VerifierAgent();
-  
-  const loop = new AgenticLoop(
-    eyes,
-    brain,
-    hands,
-    verifier,
-    (agent, thought, toolAction) => {
-        setChatHistory(prev => [...prev, {
-            role: 'agent',
-            agentType: agent,
-            text: thought,
-            toolAction: toolAction // Pass action to UI
-        }]);
-    }
-  );
+  // ----------------------------------------------------------------------
+  // HANDLERS (DEFINED EARLY TO AVOID REFERENCE ERRORS)
+  // ----------------------------------------------------------------------
 
-  // --- LOOP LOGIC ---
-
-  const executePlanStep = async (stepIndex: number, plan: EditPlan, initialIntent: string) => {
-      if (!plan || stepIndex >= plan.steps.length) {
-          // Finished all steps? Verify!
-          if (plan) {
-              await loop.verify(initialIntent, [], timelineStore.getClips());
-              setActivePlan(null); // Clear plan after verification
-          }
-          setIsProcessing(false);
-          return;
-      }
-
-      const step = plan.steps[stepIndex];
-      setCurrentStepIndex(stepIndex);
-      
-      // Update step status to generating
-      setActivePlan(prev => {
-          if (!prev) return null;
-          const newSteps = [...prev.steps];
-          newSteps[stepIndex] = { ...newSteps[stepIndex], status: 'generating' };
-          return { ...prev, steps: newSteps };
-      });
-
-      try {
-          const result = await loop.executeStep(step);
-          
-          if (result.approvalRequired) {
-              setPendingApproval(result.approvalRequired);
-              // Do NOT increment step index yet. Wait for approval modal.
-              return;
-          }
-
-          if (result.success) {
-              // Mark completed
-              setActivePlan(prev => {
-                  if (!prev) return null;
-                  const newSteps = [...prev.steps];
-                  newSteps[stepIndex] = { ...newSteps[stepIndex], status: 'completed' };
-                  return { ...prev, steps: newSteps };
-              });
-              
-              // Recurse to next step
-              await executePlanStep(stepIndex + 1, plan, initialIntent);
-          }
-      } catch (e) {
-          console.error("Step execution failed", e);
-          setIsProcessing(false);
-      }
+  const triggerLocalUpload = () => {
+      fileInputRef.current?.click();
   };
 
-  const handleRunAgentLoop = async (message: string) => {
-    setIsProcessing(true);
-    setChatHistory(prev => [...prev, { role: 'user', text: message }]);
-    setActivePlan(null); // Reset old plans
-    setCurrentStepIndex(0);
-
-    try {
-        const context = {
-            clips: timelineStore.getClips(),
-            selectedClipIds,
-            currentTime,
-            range: liveScopeRange || { start: 0, end: 0 }
-        };
-        
-        // Phase 1: Plan
-        const plan = await loop.plan(message, context, mediaRefs.current);
-        
-        if (plan) {
-            setActivePlan(plan);
-            // Start Execution from Step 0
-            await executePlanStep(0, plan, message);
-        } else {
-            setIsProcessing(false);
-        }
-
-    } catch (e) {
-        setChatHistory(prev => [...prev, { role: 'system', text: "Agent loop failed unexpectedly." }]);
-        console.error(e);
-        setIsProcessing(false);
-    } 
+  const handleCloseMediaModal = () => {
+      setMediaModalTrackId(null); setVeoStartImg(null); setVeoEndImg(null); setGenPrompt('');
   };
 
-  const handleExecuteAIAction = async (action: ToolAction) => {
-      if (action.tool_id === 'USER_ACTION_REQUEST') {
-          if (action.button_label.includes("Upload")) {
-              triggerLocalUpload();
-          }
-          return;
-      }
-
-      setIsGenerating(true);
-      await hands.execute({ 
-          operation: action.tool_id.toLowerCase(), 
-          parameters: action.parameters, 
-          intent: action.reasoning 
-      });
-      setIsGenerating(false);
-  };
-
-  const handleApprovalConfirm = async (params: any) => {
-      if (!pendingApproval || !activePlan) return;
-      
-      const { tool } = pendingApproval;
-      setPendingApproval(null);
-      setIsGenerating(true); // UI Spinner
-      
-      // Update Chat UI
-      setChatHistory(prev => [...prev, { 
-          role: 'system', 
-          text: `🚀 Starting generation for step ${currentStepIndex + 1}/${activePlan.steps.length}...` 
-      }]);
-      
-      try {
-          // Manual Execution Logic reused from Handlers
-          if (tool === 'generate_video_asset') {
-              const videoUrl = await generateVideo(
-                  params.prompt, 
-                  params.model || 'veo-3.1-fast-generate-preview', 
-                  '16:9', 
-                  '720p', 
-                  Number(params.duration) || 4
-              );
-              
-              timelineStore.addClip({
-                id: `gen-vid-${Date.now()}`,
-                title: `Veo: ${params.prompt.slice(0, 15)}...`,
-                type: 'video',
-                startTime: Number(params.insertTime),
-                duration: Number(params.duration) || 4,
-                sourceStartTime: 0,
-                sourceUrl: videoUrl,
-                trackId: Number(params.trackId) || 1,
-                volume: 1,
-                speed: 1,
-                transform: { x: 0, y: 0, scale: 1, rotation: 0 }
-              });
-          } else if (tool === 'generate_image_asset') {
-              const base64Img = await generateImage(params.prompt, params.model || 'gemini-2.5-flash-image');
-              const imgUrl = `data:image/png;base64,${base64Img}`;
-              
-              timelineStore.addClip({
-                id: `gen-img-${Date.now()}`,
-                title: `Img: ${params.prompt.slice(0, 15)}...`,
-                type: 'image',
-                startTime: Number(params.insertTime),
-                duration: Number(params.duration) || 5,
-                sourceStartTime: 0,
-                sourceUrl: imgUrl,
-                trackId: Number(params.trackId) || 1,
-                transform: { x: 0, y: 0, scale: 1, rotation: 0 }
-              });
-          } else if (tool === 'generate_voiceover') {
-              const audioUrl = await generateSpeech(params.text, params.voice || 'Kore');
-              const tempAudio = new Audio(audioUrl);
-              await new Promise<void>((resolve) => {
-                 tempAudio.onloadedmetadata = () => resolve();
-                 tempAudio.onerror = () => resolve();
-              });
-              
-              timelineStore.addClip({
-                id: `vo-${Date.now()}`,
-                title: `VO: ${params.text.slice(0, 15)}...`,
-                type: 'audio',
-                startTime: Number(params.insertTime),
-                duration: tempAudio.duration || 5,
-                sourceStartTime: 0,
-                sourceUrl: audioUrl,
-                trackId: Number(params.trackId) || 2,
-                volume: 1,
-                speed: 1,
-                transform: { x: 0, y: 0, scale: 1, rotation: 0 }
-              });
-          }
-          
-          setChatHistory(prev => [...prev, { role: 'system', text: "✅ Asset generated successfully." }]);
-
-          // Update Plan Status locally
-          setActivePlan(prev => {
-              if (!prev) return null;
-              const newSteps = [...prev.steps];
-              newSteps[currentStepIndex] = { ...newSteps[currentStepIndex], status: 'completed' };
-              return { ...prev, steps: newSteps };
-          });
-
-          // RESUME EXECUTION LOOP
-          await executePlanStep(currentStepIndex + 1, activePlan, activePlan.goal);
-
-      } catch (e: any) {
-          console.error("Generation Error:", e);
-          setChatHistory(prev => [...prev, { role: 'system', text: `❌ Generation failed: ${e.message}` }]);
-          setIsProcessing(false);
-      } finally {
-          setIsGenerating(false);
-      }
-  };
-  
-  // ... (Rest of App.tsx logic remains mostly the same, standard handlers) ...
-  
-  // ... (Playback Logic Same as before) ...
-  useEffect(() => {
-    let animationFrameId: number;
-    let lastTimestamp = performance.now();
-    const updateLoop = (timestamp: number) => {
-      const dt = (timestamp - lastTimestamp) / 1000;
-      lastTimestamp = timestamp;
-      if (isPlaying) {
-        setCurrentTime((prevTime) => prevTime + dt);
-      }
-      animationFrameId = requestAnimationFrame(updateLoop);
-    };
-    if (isPlaying) {
-        lastTimestamp = performance.now();
-        animationFrameId = requestAnimationFrame(updateLoop);
-    } else {
-        Object.values(mediaRefs.current).forEach((el) => { (el as any)?.pause(); });
-    }
-    return () => cancelAnimationFrame(animationFrameId);
-  }, [isPlaying]);
-
-  // Sync Logic
-  useEffect(() => {
-      clips.forEach(clip => {
-          if (clip.type !== 'video' && clip.type !== 'audio') return;
-          const mediaEl = mediaRefs.current[clip.id];
-          if (!mediaEl) return;
-          const isActive = currentTime >= clip.startTime && currentTime < (clip.startTime + clip.duration);
-          if (isActive) {
-              const relativeTime = currentTime - clip.startTime;
-              const targetTime = clip.sourceStartTime + (relativeTime * (clip.speed || 1));
-              if (Math.abs(mediaEl.currentTime - targetTime) > 0.25) mediaEl.currentTime = targetTime;
-              if (isPlaying) { if (mediaEl.paused) mediaEl.play().catch(() => {}); } 
-              else { if (!mediaEl.paused) mediaEl.pause(); }
-              mediaEl.muted = false; mediaEl.volume = clip.volume ?? 1; mediaEl.playbackRate = clip.speed ?? 1;
-          } else {
-              if (!mediaEl.paused) mediaEl.pause(); mediaEl.muted = true;
-          }
-      });
-  }, [currentTime, isPlaying, clips]);
-
-  const handleUndo = () => timelineStore.undo();
-  const handleRedo = () => timelineStore.redo();
-  const handleDelete = (ids: string[]) => ids.forEach(id => timelineStore.removeClip(id));
-  
-  // Shortcuts
-  useEffect(() => {
-      const handleGlobalKeyDown = (e: KeyboardEvent) => {
-          if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-          const isMod = e.ctrlKey || e.metaKey;
-          if (e.code === 'Space') { e.preventDefault(); togglePlay(); } 
-          else if (e.key === 'Backspace' || e.key === 'Delete') { handleDelete(selectedClipIds); } 
-          else if (isMod && e.key === 'z') { e.preventDefault(); if (e.shiftKey) handleRedo(); else handleUndo(); } 
-      };
-      window.addEventListener('keydown', handleGlobalKeyDown);
-      return () => window.removeEventListener('keydown', handleGlobalKeyDown);
-  }, [selectedClipIds, togglePlay]);
-
-  // Canvas
-  const captureCurrentFrame = async (): Promise<string | null> => {
-      if (!containerRef.current) return null;
-      const width = 1280; const height = 720;
-      const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
-      const ctx = canvas.getContext('2d'); if (!ctx) return null;
-      ctx.fillStyle = '#000000'; ctx.fillRect(0, 0, width, height);
-      const visible = clips.filter(c => currentTime >= c.startTime && currentTime < c.startTime + c.duration).sort((a, b) => a.trackId - b.trackId);
-      for (const clip of visible) {
-           if (clip.type === 'audio') continue;
-           if (clip.type === 'text') { drawClipToCanvas(ctx, clip, null, width, height); } 
-           else {
-               const el = mediaRefs.current[clip.id] as HTMLVideoElement | null;
-               if (clip.type === 'video' && el) { drawClipToCanvas(ctx, clip, el, width, height); } 
-               else if (clip.type === 'image') {
-                   const img = new Image(); img.crossOrigin = "anonymous"; img.src = clip.sourceUrl || '';
-                   await new Promise((resolve) => { if (img.complete) resolve(true); img.onload = () => resolve(true); img.onerror = () => resolve(false); });
-                   drawClipToCanvas(ctx, clip, img, width, height);
-               }
-           }
-      }
-      return canvas.toDataURL('image/jpeg', 0.8);
-  };
-
-  // Handlers
-  const handleSeek = (time: number) => { setCurrentTime(Math.max(0, time)); setIsPlaying(false); };
-  const handleSelectClip = (id: string, e: React.MouseEvent) => {
-    if (e.shiftKey) setSelectedClipIds(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
-    else setSelectedClipIds([id]);
-  };
-  const handleCanvasClick = () => setSelectedClipIds([]);
-
-  // Replace update functions with Store calls
-  const updateClip = (id: string, updates: Partial<Clip>) => timelineStore.updateClip(id, updates);
-  const handleUpdateClipTransform = (id: string, newTransform: NonNullable<Clip['transform']>) => updateClip(id, { transform: newTransform });
-  const handleUpdateTextContent = (id: string, text: string) => updateClip(id, { text });
-  const handleUpdateTextStyle = (updates: any) => primarySelectedClip && updateClip(primarySelectedClip.id, { textStyle: { ...primarySelectedClip.textStyle, ...updates } });
-  const handleClipSpeed = (id: string, speed: number) => updateClip(id, { speed });
-  const handleClipVolume = (id: string, volume: number) => updateClip(id, { volume });
-  
-  const handleClipResize = (id: string, newDuration: number, mode: 'start' | 'end', commit: boolean) => {
-      if (commit) {
-        timelineStore.updateClip(id, { duration: newDuration });
-      }
-  };
-  const handleClipReorder = (id: string, newStartTime: number, targetTrackId: number, commit: boolean) => {
-      if (commit) timelineStore.moveClip(id, newStartTime, targetTrackId);
-  };
-  
-  const handleAddTrack = (position: 'top' | 'bottom') => {
-      setTracks(prev => {
-          const newId = Math.max(...prev) + 1;
-          return position === 'top' ? [...prev, newId] : [newId, ...prev];
-      });
-  };
-
-  const handleRangeSelected = () => {
-      setRangeModalOpen(true);
-  };
-  
-  const handleSplitClip = () => {
-      if (primarySelectedClip) {
-          timelineStore.splitClip(primarySelectedClip.id, currentTime);
-      }
-  };
-
-  // Add media handlers (same logic, just using store.addClip)
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
       const files = e.target.files;
       if (!files || files.length === 0) return;
       setIsGenerating(true);
       try {
           const trackId = mediaModalTrackId ?? 0;
-          // Calculate start time based on existing clips in track
           const trackClips = timelineStore.getClips().filter(c => c.trackId === trackId);
           let startTime = trackClips.length > 0 ? Math.max(...trackClips.map(c => c.startTime + c.duration)) : 0;
           
@@ -1008,51 +692,8 @@ export default function App() {
           if (fileInputRef.current) fileInputRef.current.value = '';
       }
   };
-  
-  const handleAddMedia = handleFileUpload;
 
-  const triggerLocalUpload = () => {
-      fileInputRef.current?.click();
-  };
-
-  const handleCloseMediaModal = () => {
-      setMediaModalTrackId(null);
-      setVeoStartImg(null);
-      setVeoEndImg(null);
-      setGenPrompt('');
-  };
-
-  const handleRangeConfirm = (range: { start: number, end: number }) => {
-      setLiveScopeRange(range);
-      setRangeModalOpen(false);
-  };
-
-  const handleCaptureFrame = async (target: 'start' | 'end') => {
-      const frame = await captureCurrentFrame();
-      if (frame) {
-          if (target === 'start') setVeoStartImg(frame);
-          else setVeoEndImg(frame);
-      }
-  };
-
-  const handleVeoReferenceUpload = (target: 'start' | 'end') => {
-      setUploadTarget(target);
-      referenceImageInputRef.current?.click();
-  };
-
-  const handleReferenceImageFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
-      if (file) {
-          const reader = new FileReader();
-          reader.onload = () => {
-               const b64 = reader.result as string;
-               if (uploadTarget === 'start') setVeoStartImg(b64);
-               else setVeoEndImg(b64);
-          };
-          reader.readAsDataURL(file);
-      }
-      e.target.value = '';
-  };
+  const handleAddMedia = handleFileUpload; // ALIAS FOR JSX
 
   const handleGenerate = async () => {
       if (mediaModalTrackId === null) return;
@@ -1168,16 +809,373 @@ export default function App() {
           setIsExporting(false);
       }
   };
+
+  const captureCurrentFrame = async (): Promise<string | null> => {
+      if (!containerRef.current) return null;
+      const width = 1280; const height = 720;
+      const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
+      const ctx = canvas.getContext('2d'); if (!ctx) return null;
+      ctx.fillStyle = '#000000'; ctx.fillRect(0, 0, width, height);
+      const visible = clips.filter(c => currentTime >= c.startTime && currentTime < c.startTime + c.duration).sort((a, b) => a.trackId - b.trackId);
+      for (const clip of visible) {
+           if (clip.type === 'audio') continue;
+           if (clip.type === 'text') { drawClipToCanvas(ctx, clip, null, width, height); } 
+           else {
+               const el = mediaRefs.current[clip.id] as HTMLVideoElement | null;
+               if (clip.type === 'video' && el) { drawClipToCanvas(ctx, clip, el, width, height); } 
+               else if (clip.type === 'image') {
+                   const img = new Image(); img.crossOrigin = "anonymous"; img.src = clip.sourceUrl || '';
+                   await new Promise((resolve) => { if (img.complete) resolve(true); img.onload = () => resolve(true); img.onerror = () => resolve(false); });
+                   drawClipToCanvas(ctx, clip, img, width, height);
+               }
+           }
+      }
+      return canvas.toDataURL('image/jpeg', 0.8);
+  };
+
+  // --- OBSERVATION RECORDING ---
+  const handleRequestObservation = async (): Promise<string[]> => {
+      setIsVerifying(true);
+      setIsPlaying(false);
+      setCurrentTime(0);
+      await new Promise(r => setTimeout(r, 200));
+      const duration = clips.reduce((max, c) => Math.max(max, c.startTime + c.duration), 0) || 10;
+      const capturedFrames: string[] = [];
+      setIsPlaying(true);
+      
+      return new Promise((resolve) => {
+          const checkInterval = setInterval(async () => {
+              const frame = await captureCurrentFrame();
+              if (frame) capturedFrames.push(frame);
+              if (currentTimeRef.current >= duration) {
+                  clearInterval(checkInterval);
+                  setIsPlaying(false);
+                  setIsVerifying(false);
+                  resolve(capturedFrames);
+              }
+          }, 1000);
+      });
+  };
+
+  // --- AGENTS ---
+  const eyes = new EyesAgent();
+  const brain = new BrainAgent();
+  const hands = new HandsAgent();
+  const verifier = new VerifierAgent();
   
-  // Render
+  const loop = new AgenticLoop(
+    eyes,
+    brain,
+    hands,
+    verifier,
+    (agent, thought, toolAction) => {
+        setChatHistory(prev => [...prev, {
+            role: 'agent',
+            agentType: agent,
+            text: thought,
+            toolAction: toolAction 
+        }]);
+    },
+    handleRequestObservation 
+  );
+
+  const executePlanStep = async (stepIndex: number, plan: EditPlan, initialIntent: string) => {
+      if (!plan || stepIndex >= plan.steps.length) {
+          if (plan) {
+              await loop.verify(initialIntent, [], timelineStore.getClips());
+              setActivePlan(null); 
+          }
+          setIsProcessing(false);
+          return;
+      }
+
+      const step = plan.steps[stepIndex];
+      setCurrentStepIndex(stepIndex);
+      
+      setActivePlan(prev => {
+          if (!prev) return null;
+          const newSteps = [...prev.steps];
+          newSteps[stepIndex] = { ...newSteps[stepIndex], status: 'generating' };
+          return { ...prev, steps: newSteps };
+      });
+
+      try {
+          const result = await loop.executeStep(step);
+          
+          if (result.approvalRequired) {
+              setPendingApproval(result.approvalRequired);
+              return;
+          }
+
+          if (result.success) {
+              setActivePlan(prev => {
+                  if (!prev) return null;
+                  const newSteps = [...prev.steps];
+                  newSteps[stepIndex] = { ...newSteps[stepIndex], status: 'completed' };
+                  return { ...prev, steps: newSteps };
+              });
+              await executePlanStep(stepIndex + 1, plan, initialIntent);
+          }
+      } catch (e) {
+          console.error("Step execution failed", e);
+          setIsProcessing(false);
+      }
+  };
+
+  const handleRunAgentLoop = async (message: string) => {
+    setIsProcessing(true);
+    setChatHistory(prev => [...prev, { role: 'user', text: message }]);
+    setActivePlan(null); 
+    setCurrentStepIndex(0);
+
+    try {
+        const context = {
+            clips: timelineStore.getClips(),
+            selectedClipIds,
+            currentTime,
+            range: liveScopeRange || { start: 0, end: 0 }
+        };
+        
+        const plan = await loop.plan(message, context, mediaRefs.current);
+        
+        if (plan) {
+            setActivePlan(plan);
+            await executePlanStep(0, plan, message);
+        } else {
+            setIsProcessing(false);
+        }
+
+    } catch (e) {
+        setChatHistory(prev => [...prev, { role: 'system', text: "Agent loop failed unexpectedly." }]);
+        console.error(e);
+        setIsProcessing(false);
+    } 
+  };
+
+  const handleExecuteAIAction = async (action: ToolAction) => {
+      if (action.tool_id === 'REPLAN_REQUEST') {
+          const fixPrompt = action.parameters?.prompt || action.reasoning;
+          await handleRunAgentLoop(fixPrompt);
+          return;
+      }
+
+      if (action.tool_id === 'USER_ACTION_REQUEST') {
+          if (action.button_label.includes("Upload")) {
+              triggerLocalUpload();
+          }
+          return;
+      }
+
+      setIsGenerating(true);
+      await hands.execute({ 
+          operation: action.tool_id.toLowerCase(), 
+          parameters: action.parameters, 
+          intent: action.reasoning 
+      });
+      setIsGenerating(false);
+  };
+
+  const handleApprovalConfirm = async (params: any) => {
+      if (!pendingApproval || !activePlan) return;
+      
+      const { tool } = pendingApproval;
+      setPendingApproval(null);
+      setIsGenerating(true); 
+      
+      setChatHistory(prev => [...prev, { 
+          role: 'system', 
+          text: `🚀 Starting generation for step ${currentStepIndex + 1}/${activePlan.steps.length}...` 
+      }]);
+      
+      try {
+          const currentClips = timelineStore.getClips();
+          const maxTrack = currentClips.length > 0 ? Math.max(...currentClips.map(c => c.trackId)) : 0;
+          let targetTrackId = Number(params.trackId);
+          if (isNaN(targetTrackId)) targetTrackId = maxTrack + 1;
+          const rawInsertTime = Number(params.insertTime);
+          const safeStartTime = isNaN(rawInsertTime) ? 0 : rawInsertTime;
+          const rawDuration = Number(params.duration);
+          const safeDuration = (isNaN(rawDuration) || rawDuration <= 0) ? 4 : rawDuration;
+
+          if (tool === 'generate_video_asset') {
+              const videoUrl = await generateVideo(params.prompt, params.model || 'veo-3.1-fast-generate-preview', '16:9', '720p', safeDuration);
+              timelineStore.addClip({
+                id: `gen-vid-${Date.now()}`,
+                title: `Veo: ${params.prompt.slice(0, 15)}...`,
+                type: 'video',
+                startTime: safeStartTime,
+                duration: safeDuration,
+                sourceStartTime: 0,
+                sourceUrl: videoUrl,
+                trackId: targetTrackId,
+                volume: 1,
+                speed: 1,
+                transform: { x: 0, y: 0, scale: 1, rotation: 0 }
+              });
+          } else if (tool === 'generate_image_asset') {
+              const base64Img = await generateImage(params.prompt, params.model || 'gemini-2.5-flash-image');
+              const imgUrl = `data:image/png;base64,${base64Img}`;
+              timelineStore.addClip({
+                id: `gen-img-${Date.now()}`,
+                title: `Img: ${params.prompt.slice(0, 15)}...`,
+                type: 'image',
+                startTime: safeStartTime,
+                duration: safeDuration || 5,
+                sourceStartTime: 0,
+                sourceUrl: imgUrl,
+                trackId: targetTrackId,
+                transform: { x: 0, y: 0, scale: 1, rotation: 0 }
+              });
+          } else if (tool === 'generate_voiceover') {
+              const audioUrl = await generateSpeech(params.text, params.voice || 'Kore');
+              const tempAudio = new Audio(audioUrl);
+              await new Promise<void>((resolve) => { tempAudio.onloadedmetadata = () => resolve(); tempAudio.onerror = () => resolve(); });
+              timelineStore.addClip({
+                id: `vo-${Date.now()}`,
+                title: `VO: ${params.text.slice(0, 15)}...`,
+                type: 'audio',
+                startTime: safeStartTime,
+                duration: tempAudio.duration || 5,
+                sourceStartTime: 0,
+                sourceUrl: audioUrl,
+                trackId: targetTrackId,
+                volume: 1,
+                speed: 1,
+                transform: { x: 0, y: 0, scale: 1, rotation: 0 }
+              });
+          }
+          
+          setChatHistory(prev => [...prev, { role: 'system', text: "✅ Asset generated successfully." }]);
+          setActivePlan(prev => {
+              if (!prev) return null;
+              const newSteps = [...prev.steps];
+              newSteps[currentStepIndex] = { ...newSteps[currentStepIndex], status: 'completed' };
+              return { ...prev, steps: newSteps };
+          });
+          await executePlanStep(currentStepIndex + 1, activePlan, activePlan.goal);
+
+      } catch (e: any) {
+          console.error("Generation Error:", e);
+          setChatHistory(prev => [...prev, { role: 'system', text: `❌ Generation failed: ${e.message}` }]);
+          setIsProcessing(false);
+      } finally {
+          setIsGenerating(false);
+      }
+  };
+  
+  useEffect(() => {
+    let animationFrameId: number;
+    let lastTimestamp = performance.now();
+    const updateLoop = (timestamp: number) => {
+      const dt = (timestamp - lastTimestamp) / 1000;
+      lastTimestamp = timestamp;
+      if (isPlaying) setCurrentTime((prevTime) => prevTime + dt);
+      animationFrameId = requestAnimationFrame(updateLoop);
+    };
+    if (isPlaying) {
+        lastTimestamp = performance.now();
+        animationFrameId = requestAnimationFrame(updateLoop);
+    } else {
+        Object.values(mediaRefs.current).forEach((el) => { (el as any)?.pause(); });
+    }
+    return () => cancelAnimationFrame(animationFrameId);
+  }, [isPlaying]);
+
+  useEffect(() => {
+      clips.forEach(clip => {
+          if (clip.type !== 'video' && clip.type !== 'audio') return;
+          const mediaEl = mediaRefs.current[clip.id];
+          if (!mediaEl) return;
+          const isActive = currentTime >= clip.startTime && currentTime < (clip.startTime + clip.duration);
+          if (isActive) {
+              const relativeTime = currentTime - clip.startTime;
+              const targetTime = clip.sourceStartTime + (relativeTime * (clip.speed || 1));
+              if (Math.abs(mediaEl.currentTime - targetTime) > 0.25) mediaEl.currentTime = targetTime;
+              if (isPlaying) { if (mediaEl.paused) mediaEl.play().catch(() => {}); } 
+              else { if (!mediaEl.paused) mediaEl.pause(); }
+              mediaEl.muted = false; mediaEl.volume = clip.volume ?? 1; mediaEl.playbackRate = clip.speed ?? 1;
+          } else {
+              if (!mediaEl.paused) mediaEl.pause(); mediaEl.muted = true;
+          }
+      });
+  }, [currentTime, isPlaying, clips]);
+
+  const handleUndo = () => timelineStore.undo();
+  const handleRedo = () => timelineStore.redo();
+  const handleDelete = (ids: string[]) => ids.forEach(id => timelineStore.removeClip(id));
+  
+  useEffect(() => {
+      const handleGlobalKeyDown = (e: KeyboardEvent) => {
+          if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+          const isMod = e.ctrlKey || e.metaKey;
+          if (e.code === 'Space') { e.preventDefault(); togglePlay(); } 
+          else if (e.key === 'Backspace' || e.key === 'Delete') { handleDelete(selectedClipIds); } 
+          else if (isMod && e.key === 'z') { e.preventDefault(); if (e.shiftKey) handleRedo(); else handleUndo(); } 
+      };
+      window.addEventListener('keydown', handleGlobalKeyDown);
+      return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+  }, [selectedClipIds, togglePlay]);
+
+  const handleSeek = (time: number) => { setCurrentTime(Math.max(0, time)); setIsPlaying(false); };
+  const handleSelectClip = (id: string, e: React.MouseEvent) => {
+    if (e.shiftKey) setSelectedClipIds(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
+    else setSelectedClipIds([id]);
+  };
+  const handleCanvasClick = () => setSelectedClipIds([]);
+
+  const updateClip = (id: string, updates: Partial<Clip>) => timelineStore.updateClip(id, updates);
+  const handleUpdateClipTransform = (id: string, newTransform: NonNullable<Clip['transform']>) => updateClip(id, { transform: newTransform });
+  const handleUpdateTextContent = (id: string, text: string) => updateClip(id, { text });
+  const handleUpdateTextStyle = (updates: any) => primarySelectedClip && updateClip(primarySelectedClip.id, { textStyle: { ...primarySelectedClip.textStyle, ...updates } });
+  const handleClipSpeed = (id: string, speed: number) => updateClip(id, { speed });
+  const handleClipVolume = (id: string, volume: number) => updateClip(id, { volume });
+  
+  const handleClipResize = (id: string, newDuration: number, mode: 'start' | 'end', commit: boolean) => {
+      if (commit) { timelineStore.updateClip(id, { duration: newDuration }); }
+  };
+  const handleClipReorder = (id: string, newStartTime: number, targetTrackId: number, commit: boolean) => {
+      if (commit) timelineStore.moveClip(id, newStartTime, targetTrackId);
+  };
+  
+  const handleAddTrack = (position: 'top' | 'bottom') => {
+      setTracks(prev => {
+          const newId = Math.max(...prev) + 1;
+          return position === 'top' ? [...prev, newId] : [newId, ...prev];
+      });
+  };
+
+  const handleRangeSelected = () => { setRangeModalOpen(true); };
+  const handleSplitClip = () => { if (primarySelectedClip) { timelineStore.splitClip(primarySelectedClip.id, currentTime); } };
+
+  const handleRangeConfirm = (range: { start: number, end: number }) => { setLiveScopeRange(range); setRangeModalOpen(false); };
+  const handleCaptureFrame = async (target: 'start' | 'end') => {
+      const frame = await captureCurrentFrame();
+      if (frame) { if (target === 'start') setVeoStartImg(frame); else setVeoEndImg(frame); }
+  };
+  const handleVeoReferenceUpload = (target: 'start' | 'end') => { setUploadTarget(target); referenceImageInputRef.current?.click(); };
+  const handleReferenceImageFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (file) {
+          const reader = new FileReader();
+          reader.onload = () => { const b64 = reader.result as string; if (uploadTarget === 'start') setVeoStartImg(b64); else setVeoEndImg(b64); };
+          reader.readAsDataURL(file);
+      }
+      e.target.value = '';
+  };
+
   return (
-    <div className="flex flex-col h-screen bg-neutral-950 text-neutral-100 font-sans overflow-hidden">
-      <GenerationApprovalModal 
-          isOpen={!!pendingApproval} 
-          onClose={() => { setPendingApproval(null); setIsProcessing(false); }} 
-          onConfirm={handleApprovalConfirm} 
-          request={pendingApproval} 
-      />
+    <div className={`flex flex-col h-screen bg-neutral-950 text-neutral-100 font-sans overflow-hidden transition-all duration-300 ${isVerifying ? 'ring-4 ring-yellow-500/50 scale-[0.99]' : ''}`}>
+      {isVerifying && (
+          <div className="fixed inset-0 z-[9999] pointer-events-none flex flex-col">
+              <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,transparent_0%,rgba(234,179,8,0.1)_100%)] animate-pulse" />
+              <div className="w-full bg-yellow-500/90 text-black py-1 text-center font-bold text-xs uppercase tracking-widest shadow-lg flex items-center justify-center gap-2">
+                  <ShieldCheck size={14} className="animate-pulse" /> Verification in Progress - Recording Playback View
+              </div>
+              <div className="flex-1 border-[6px] border-yellow-500/20" />
+          </div>
+      )}
+
+      <GenerationApprovalModal isOpen={!!pendingApproval} onClose={() => { setPendingApproval(null); setIsProcessing(false); }} onConfirm={handleApprovalConfirm} request={pendingApproval} />
       <RangeEditorModal isOpen={rangeModalOpen} onClose={() => { setRangeModalOpen(false); setIsSelectingScope(false); }} onConfirm={handleRangeConfirm} initialRange={liveScopeRange || { start: 0, end: 5 }} clips={clips} mediaRefs={mediaRefs} />
       <input type="file" multiple accept="video/*,image/*,audio/*" className="hidden" ref={fileInputRef} onChange={handleAddMedia} />
       <input type="file" accept="image/*" className="hidden" ref={referenceImageInputRef} onChange={handleReferenceImageFileChange} />

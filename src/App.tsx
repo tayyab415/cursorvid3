@@ -1,26 +1,26 @@
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Timeline } from './components/Timeline';
-import { CanvasControls } from './components/CanvasControls';
-import { AIAssistant } from './components/sidebar/AIAssistant';
-import { Clip, ChatMessage, ToolAction } from './types';
-import { generateImage, generateVideo, generateSpeech, determinePlacement } from './services/gemini';
-import { captureFrameFromVideoUrl, extractAudioFromVideo } from './utils/videoUtils';
+import { Timeline } from '../components/Timeline';
+import { CanvasControls } from '../components/CanvasControls';
+import { AIAssistant } from '../components/sidebar/AIAssistant';
+import { Clip, ChatMessage, ToolAction, EditPlan } from '../types';
+import { generateImage, generateVideo, generateSpeech } from '../services/gemini';
+import { extractAudioFromVideo } from '../utils/videoUtils';
 import { 
-  Video, Wand2, Play, Pause, Loader2, Upload, RotateCcw, RotateCw, 
+  Video, Play, Pause, Loader2, Upload, RotateCcw, RotateCw, 
   Sparkles, Scissors, Gauge, Download, Volume2, VolumeX, X, 
   Image as ImageIcon, Film, Mic, Camera, Trash2, Info, Captions, 
   Type, Bold, Italic, Underline, AlignCenter, AlignLeft, AlignRight, 
-  Check, ChevronLeft 
+  Check, ChevronLeft, ShieldCheck 
 } from 'lucide-react';
-import { timelineStore } from './timeline/store';
+import { timelineStore } from '../timeline/store';
 
 // AGENTS
-import { AgenticLoop } from './services/agents/loopRunner';
-import { EyesAgent } from './services/agents/eyes';
-import { BrainAgent } from './services/agents/brain';
-import { HandsAgent } from './services/agents/hands';
-import { VerifierAgent } from './services/agents/verifier';
+import { AgenticLoop } from '../services/agents/loopRunner';
+import { EyesAgent } from '../services/agents/eyes';
+import { BrainAgent } from '../services/agents/brain';
+import { HandsAgent } from '../services/agents/hands';
+import { VerifierAgent } from '../services/agents/verifier';
 
 const DEFAULT_TEXT_STYLE = {
     fontFamily: 'Plus Jakarta Sans',
@@ -352,6 +352,7 @@ const TextControls = ({ values, onChange }: { values: any, onChange: (updates: a
          </div>
     </div>
 );
+
 const GeminiLogo = ({ className = "w-6 h-6" }: { className?: string }) => (
     <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
         <path d="M16 3C16 3 16.0375 8.525 21.0625 10.9375C16.0375 13.35 16 19 16 19C16 19 15.9625 13.35 11 11C15.9625 8.525 16 3 16 3Z" fill="url(#gemini-gradient)" />
@@ -365,22 +366,196 @@ const GeminiLogo = ({ className = "w-6 h-6" }: { className?: string }) => (
     </svg>
 );
 
+const GenerationApprovalModal = ({ 
+    isOpen, 
+    onClose, 
+    onConfirm, 
+    request 
+}: { 
+    isOpen: boolean, 
+    onClose: () => void, 
+    onConfirm: (params: any) => void, 
+    request: { tool: string, params: any } | null 
+}) => {
+    if (!isOpen || !request) return null;
+
+    const [params, setParams] = useState(request.params);
+
+    useEffect(() => {
+        setParams(request.params);
+    }, [request]);
+
+    const handleChange = (key: string, value: any) => {
+        setParams(prev => ({ ...prev, [key]: value }));
+    };
+
+    const isVideo = request.tool === 'generate_video_asset';
+    const isImage = request.tool === 'generate_image_asset';
+    const isAudio = request.tool === 'generate_voiceover';
+
+    const getIcon = () => {
+        if (isVideo) return <Film className="w-5 h-5 text-purple-400" />;
+        if (isImage) return <ImageIcon className="w-5 h-5 text-yellow-400" />;
+        if (isAudio) return <Mic className="w-5 h-5 text-blue-400" />;
+        return <Sparkles className="w-5 h-5 text-purple-400" />;
+    };
+
+    const getTitle = () => {
+        if (isVideo) return "Generate Video Asset";
+        if (isImage) return "Generate Image Asset";
+        if (isAudio) return "Generate Voiceover";
+        return "Generate Asset";
+    };
+
+    return (
+        <div className="fixed inset-0 z-[800] flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={onClose} />
+            <div className="relative w-full max-w-2xl bg-neutral-900 border border-neutral-800 rounded-2xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]">
+                <div className="p-4 border-b border-neutral-800 flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                        <div className="p-2 rounded-lg bg-neutral-800 border border-neutral-700">
+                            {getIcon()}
+                        </div>
+                        <div>
+                            <h3 className="text-sm font-bold text-white">{getTitle()}</h3>
+                            <p className="text-[10px] text-neutral-400 uppercase tracking-wider">AI Execution Approval</p>
+                        </div>
+                    </div>
+                    <button onClick={onClose} className="p-2 hover:bg-neutral-800 rounded-full text-neutral-400 hover:text-white transition-colors">
+                        <X className="w-5 h-5" />
+                    </button>
+                </div>
+                
+                <div className="flex-1 p-6 overflow-y-auto bg-neutral-950/50">
+                    <div className="max-w-xl mx-auto space-y-6">
+                        {/* Common: Prompt / Text */}
+                        <div>
+                            <label className="block text-sm font-medium text-neutral-400 mb-2">
+                                {isAudio ? 'Script' : 'Prompt'}
+                            </label>
+                            <textarea 
+                                value={isAudio ? params.text : params.prompt} 
+                                onChange={(e) => handleChange(isAudio ? 'text' : 'prompt', e.target.value)}
+                                className="w-full h-24 bg-neutral-900 border border-neutral-700 rounded-xl p-3 text-sm focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 resize-none transition-all text-neutral-200"
+                            />
+                        </div>
+
+                        {/* Model Suggestion Banner */}
+                        {params.model && (
+                            <div className="bg-purple-900/10 border border-purple-500/20 rounded-lg p-3 flex items-start gap-3">
+                                <Sparkles className="w-4 h-4 text-purple-400 mt-0.5 shrink-0" />
+                                <div>
+                                    <p className="text-xs font-bold text-purple-200">AI Model Suggestion</p>
+                                    <p className="text-xs text-purple-300/80 mt-0.5 leading-relaxed">
+                                        The planner selected <strong>{params.model}</strong> based on your intent. You can change this below.
+                                    </p>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Type Specific Controls Grid */}
+                        <div className="grid grid-cols-2 gap-6 pt-2 border-t border-neutral-800">
+                            {isVideo && (
+                                <>
+                                    <div>
+                                        <label className="block text-xs font-medium text-neutral-500 mb-1">Model</label>
+                                        <select 
+                                            value={params.model || 'veo-3.1-fast-generate-preview'} 
+                                            onChange={(e) => handleChange('model', e.target.value)}
+                                            className="w-full bg-neutral-900 border border-neutral-700 rounded-lg p-2 text-sm focus:outline-none focus:border-purple-500 text-white"
+                                        >
+                                            <option value="veo-3.1-fast-generate-preview">Veo 3.1 Fast</option>
+                                            <option value="veo-3.1-generate-preview">Veo 3.1 Quality</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-medium text-neutral-500 mb-1">Duration</label>
+                                        <select 
+                                            value={params.duration || 4} 
+                                            onChange={(e) => handleChange('duration', Number(e.target.value))}
+                                            className="w-full bg-neutral-900 border border-neutral-700 rounded-lg p-2 text-sm focus:outline-none focus:border-purple-500 text-white"
+                                        >
+                                            <option value={4}>4 Seconds</option>
+                                            <option value={8}>8 Seconds</option>
+                                        </select>
+                                    </div>
+                                </>
+                            )}
+                            {isImage && (
+                                <div>
+                                    <label className="block text-xs font-medium text-neutral-500 mb-1">Model</label>
+                                    <select 
+                                        value={params.model || 'gemini-2.5-flash-image'} 
+                                        onChange={(e) => handleChange('model', e.target.value)}
+                                        className="w-full bg-neutral-900 border border-neutral-700 rounded-lg p-2 text-sm focus:outline-none focus:border-purple-500 text-white"
+                                    >
+                                        <option value="gemini-2.5-flash-image">Gemini 2.5 Flash</option>
+                                        <option value="gemini-3-pro-image-preview">Gemini 3 Pro</option>
+                                    </select>
+                                </div>
+                            )}
+                            {isAudio && (
+                                <div>
+                                    <label className="block text-xs font-medium text-neutral-500 mb-1">Voice</label>
+                                    <div className="grid grid-cols-3 gap-2">
+                                        {['Kore', 'Puck', 'Charon', 'Fenrir', 'Zephyr'].map(voice => (
+                                            <button 
+                                                key={voice} 
+                                                onClick={() => handleChange('voice', voice)} 
+                                                className={`p-2 rounded border text-xs font-medium transition-all ${params.voice === voice ? 'bg-purple-600 border-purple-500 text-white' : 'bg-neutral-900 border-neutral-700 text-neutral-400 hover:border-neutral-600'}`}
+                                            >
+                                                {voice}
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+
+                <div className="p-4 border-t border-neutral-800 bg-neutral-950 flex justify-end gap-3">
+                    <button onClick={onClose} className="px-4 py-2 text-xs font-bold text-neutral-400 hover:text-white transition-colors">Cancel</button>
+                    <button onClick={() => onConfirm(params)} className="flex items-center gap-2 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 text-white px-6 py-2 rounded-lg font-medium text-sm transition-all shadow-lg shadow-purple-900/20">
+                        <Sparkles size={14} className="text-yellow-200" /> Confirm & Generate
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// --- HELPER FOR TRACK SAFETY ---
+const getSafeTrackId = (preferredTrack: number, clips: Clip[]): number => {
+    if (clips.length === 0) return preferredTrack;
+    const maxTrack = Math.max(...clips.map(c => c.trackId));
+    if (preferredTrack === 0) return Math.max(1, maxTrack + 1);
+    return preferredTrack;
+};
 
 export default function App() {
   const [tracks, setTracks] = useState<number[]>([0, 1, 2, 3]);
-
-  // Use Store for Clips (Single Source of Truth)
   const [clips, setClips] = useState<Clip[]>(timelineStore.getClips());
   
+  useEffect(() => { return timelineStore.subscribe(setClips); }, []);
   useEffect(() => {
-    return timelineStore.subscribe(setClips);
-  }, []);
+      if (clips.length === 0) return;
+      const maxTrackInClips = Math.max(...clips.map(c => c.trackId));
+      setTracks(prev => {
+          const currentMax = Math.max(...prev);
+          if (maxTrackInClips > currentMax) {
+              const newTracks = [...prev];
+              for (let i = currentMax + 1; i <= maxTrackInClips; i++) newTracks.push(i);
+              return newTracks;
+          }
+          return prev;
+      });
+  }, [clips]);
 
   const clipsRef = useRef(clips);
   useEffect(() => { clipsRef.current = clips; }, [clips]);
 
   const [selectedClipIds, setSelectedClipIds] = useState<string[]>([]);
-  const clipboardRef = useRef<Clip[]>([]);
   
   const [showSpeedMenu, setShowSpeedMenu] = useState(false);
   const [isCustomSpeed, setIsCustomSpeed] = useState(false);
@@ -392,6 +567,8 @@ export default function App() {
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isVerifying, setIsVerifying] = useState(false);
+
   const togglePlay = useCallback(() => setIsPlaying(p => !p), []);
 
   const [currentTime, setCurrentTime] = useState(0); 
@@ -422,9 +599,13 @@ export default function App() {
   const [uploadTarget, setUploadTarget] = useState<'start'|'end'>('start');
   const [audioVoice, setAudioVoice] = useState('Kore');
   
-  // CHAT STATE
+  // CHAT & AGENT STATE
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
+  
+  const [activePlan, setActivePlan] = useState<EditPlan | null>(null);
+  const [currentStepIndex, setCurrentStepIndex] = useState(0);
+  const [pendingApproval, setPendingApproval] = useState<{ tool: string, params: any } | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null); 
   const canvasRef = useRef<HTMLCanvasElement>(null); 
@@ -432,6 +613,8 @@ export default function App() {
   const referenceImageInputRef = useRef<HTMLInputElement>(null);
   const mediaRefs = useRef<{[key: string]: HTMLVideoElement | HTMLAudioElement | null}>({});
   const currentTimeRef = useRef(currentTime);
+
+  useEffect(() => { currentTimeRef.current = currentTime; }, [currentTime]);
 
   const selectedClips = clips.filter(c => selectedClipIds.includes(c.id));
   const primarySelectedClip = selectedClips.length > 0 ? selectedClips[selectedClips.length - 1] : null;
@@ -447,180 +630,24 @@ export default function App() {
   const veoModeLabel = veoStartImg && veoEndImg ? 'Morph Mode' : veoStartImg ? 'Image-to-Video' : 'Text-to-Video';
   const veoModeColor = veoStartImg && veoEndImg ? 'text-purple-300 bg-purple-900/50 border-purple-500/50' : veoStartImg ? 'text-blue-300 bg-blue-900/50 border-blue-500/50' : 'text-neutral-400 bg-neutral-800 border-neutral-700';
 
-  // --- AGENTS ---
-  const eyes = new EyesAgent();
-  const brain = new BrainAgent();
-  const hands = new HandsAgent();
-  const verifier = new VerifierAgent();
-  
-  const loop = new AgenticLoop(
-    eyes,
-    brain,
-    hands,
-    verifier,
-    (agent, thought) => {
-        setChatHistory(prev => [...prev, {
-            role: 'agent',
-            agentType: agent,
-            text: thought
-        }]);
-    }
-  );
+  // ----------------------------------------------------------------------
+  // HANDLERS (DEFINED EARLY TO AVOID REFERENCE ERRORS)
+  // ----------------------------------------------------------------------
 
-  const handleRunAgentLoop = async (message: string) => {
-    setIsProcessing(true);
-    setChatHistory(prev => [...prev, { role: 'user', text: message }]);
-    try {
-        await loop.run(message, timelineStore.getClips(), mediaRefs.current);
-    } catch (e) {
-        setChatHistory(prev => [...prev, { role: 'system', text: "Agent loop failed unexpectedly." }]);
-    } finally {
-        setIsProcessing(false);
-    }
+  const triggerLocalUpload = () => {
+      fileInputRef.current?.click();
   };
 
-  const handleExecuteAIAction = async (action: ToolAction) => {
-      // Legacy or direct tool actions could be routed through Hands
-      setIsGenerating(true);
-      await hands.execute({ 
-          operation: action.tool_id.toLowerCase(), 
-          parameters: action.parameters, 
-          intent: action.reasoning 
-      });
-      setIsGenerating(false);
-  };
-  
-  // ... (Playback Logic Same as before) ...
-  useEffect(() => {
-    let animationFrameId: number;
-    let lastTimestamp = performance.now();
-    const updateLoop = (timestamp: number) => {
-      const dt = (timestamp - lastTimestamp) / 1000;
-      lastTimestamp = timestamp;
-      if (isPlaying) {
-        setCurrentTime((prevTime) => prevTime + dt);
-      }
-      animationFrameId = requestAnimationFrame(updateLoop);
-    };
-    if (isPlaying) {
-        lastTimestamp = performance.now();
-        animationFrameId = requestAnimationFrame(updateLoop);
-    } else {
-        Object.values(mediaRefs.current).forEach((el) => { (el as any)?.pause(); });
-    }
-    return () => cancelAnimationFrame(animationFrameId);
-  }, [isPlaying]);
-
-  // Sync Logic
-  useEffect(() => {
-      clips.forEach(clip => {
-          if (clip.type !== 'video' && clip.type !== 'audio') return;
-          const mediaEl = mediaRefs.current[clip.id];
-          if (!mediaEl) return;
-          const isActive = currentTime >= clip.startTime && currentTime < (clip.startTime + clip.duration);
-          if (isActive) {
-              const relativeTime = currentTime - clip.startTime;
-              const targetTime = clip.sourceStartTime + (relativeTime * (clip.speed || 1));
-              if (Math.abs(mediaEl.currentTime - targetTime) > 0.25) mediaEl.currentTime = targetTime;
-              if (isPlaying) { if (mediaEl.paused) mediaEl.play().catch(() => {}); } 
-              else { if (!mediaEl.paused) mediaEl.pause(); }
-              mediaEl.muted = false; mediaEl.volume = clip.volume ?? 1; mediaEl.playbackRate = clip.speed ?? 1;
-          } else {
-              if (!mediaEl.paused) mediaEl.pause(); mediaEl.muted = true;
-          }
-      });
-  }, [currentTime, isPlaying, clips]);
-
-  const handleUndo = () => timelineStore.undo();
-  const handleRedo = () => timelineStore.redo();
-  const handleDelete = (ids: string[]) => ids.forEach(id => timelineStore.removeClip(id));
-  
-  // Shortcuts
-  useEffect(() => {
-      const handleGlobalKeyDown = (e: KeyboardEvent) => {
-          if (e.target instanceof HTMLInputElement) return;
-          const isMod = e.ctrlKey || e.metaKey;
-          if (e.code === 'Space') { e.preventDefault(); togglePlay(); } 
-          else if (e.key === 'Backspace' || e.key === 'Delete') { handleDelete(selectedClipIds); } 
-          else if (isMod && e.key === 'z') { e.preventDefault(); if (e.shiftKey) handleRedo(); else handleUndo(); } 
-      };
-      window.addEventListener('keydown', handleGlobalKeyDown);
-      return () => window.removeEventListener('keydown', handleGlobalKeyDown);
-  }, [selectedClipIds, togglePlay]);
-
-  // Canvas
-  const captureCurrentFrame = async (): Promise<string | null> => {
-      if (!containerRef.current) return null;
-      const width = 1280; const height = 720;
-      const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
-      const ctx = canvas.getContext('2d'); if (!ctx) return null;
-      ctx.fillStyle = '#000000'; ctx.fillRect(0, 0, width, height);
-      const visible = clips.filter(c => currentTime >= c.startTime && currentTime < c.startTime + c.duration).sort((a, b) => a.trackId - b.trackId);
-      for (const clip of visible) {
-           if (clip.type === 'audio') continue;
-           if (clip.type === 'text') { drawClipToCanvas(ctx, clip, null, width, height); } 
-           else {
-               const el = mediaRefs.current[clip.id] as HTMLVideoElement | null;
-               if (clip.type === 'video' && el) { drawClipToCanvas(ctx, clip, el, width, height); } 
-               else if (clip.type === 'image') {
-                   const img = new Image(); img.crossOrigin = "anonymous"; img.src = clip.sourceUrl || '';
-                   await new Promise((resolve) => { if (img.complete) resolve(true); img.onload = () => resolve(true); img.onerror = () => resolve(false); });
-                   drawClipToCanvas(ctx, clip, img, width, height);
-               }
-           }
-      }
-      return canvas.toDataURL('image/jpeg', 0.8);
+  const handleCloseMediaModal = () => {
+      setMediaModalTrackId(null); setVeoStartImg(null); setVeoEndImg(null); setGenPrompt('');
   };
 
-  // Handlers
-  const handleSeek = (time: number) => { setCurrentTime(Math.max(0, time)); setIsPlaying(false); };
-  const handleSelectClip = (id: string, e: React.MouseEvent) => {
-    if (e.shiftKey) setSelectedClipIds(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
-    else setSelectedClipIds([id]);
-  };
-  const handleCanvasClick = () => setSelectedClipIds([]);
-
-  // Replace update functions with Store calls
-  const updateClip = (id: string, updates: Partial<Clip>) => timelineStore.updateClip(id, updates);
-  const handleUpdateClipTransform = (id: string, newTransform: NonNullable<Clip['transform']>) => updateClip(id, { transform: newTransform });
-  const handleUpdateTextContent = (id: string, text: string) => updateClip(id, { text });
-  const handleUpdateTextStyle = (updates: any) => primarySelectedClip && updateClip(primarySelectedClip.id, { textStyle: { ...primarySelectedClip.textStyle, ...updates } });
-  const handleClipSpeed = (id: string, speed: number) => updateClip(id, { speed });
-  const handleClipVolume = (id: string, volume: number) => updateClip(id, { volume });
-  
-  const handleClipResize = (id: string, newDuration: number, mode: 'start' | 'end', commit: boolean) => {
-      if (commit) {
-        timelineStore.updateClip(id, { duration: newDuration });
-      }
-  };
-  const handleClipReorder = (id: string, newStartTime: number, targetTrackId: number, commit: boolean) => {
-      if (commit) timelineStore.moveClip(id, newStartTime, targetTrackId);
-  };
-  
-  const handleAddTrack = (position: 'top' | 'bottom') => {
-      setTracks(prev => {
-          const newId = Math.max(...prev) + 1;
-          return position === 'top' ? [...prev, newId] : [newId, ...prev];
-      });
-  };
-
-  const handleRangeSelected = () => {
-      setRangeModalOpen(true);
-  };
-  
-  const handleSplitClip = () => {
-      // Placeholder for split implementation in store context
-      // For now no-op or simple
-  };
-
-  // Add media handlers (same logic, just using store.addClip)
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
       const files = e.target.files;
       if (!files || files.length === 0) return;
       setIsGenerating(true);
       try {
           const trackId = mediaModalTrackId ?? 0;
-          // Calculate start time based on existing clips in track
           const trackClips = timelineStore.getClips().filter(c => c.trackId === trackId);
           let startTime = trackClips.length > 0 ? Math.max(...trackClips.map(c => c.startTime + c.duration)) : 0;
           
@@ -665,51 +692,8 @@ export default function App() {
           if (fileInputRef.current) fileInputRef.current.value = '';
       }
   };
-  
-  const handleAddMedia = handleFileUpload;
 
-  const triggerLocalUpload = () => {
-      fileInputRef.current?.click();
-  };
-
-  const handleCloseMediaModal = () => {
-      setMediaModalTrackId(null);
-      setVeoStartImg(null);
-      setVeoEndImg(null);
-      setGenPrompt('');
-  };
-
-  const handleRangeConfirm = (range: { start: number, end: number }) => {
-      setLiveScopeRange(range);
-      setRangeModalOpen(false);
-  };
-
-  const handleCaptureFrame = async (target: 'start' | 'end') => {
-      const frame = await captureCurrentFrame();
-      if (frame) {
-          if (target === 'start') setVeoStartImg(frame);
-          else setVeoEndImg(frame);
-      }
-  };
-
-  const handleVeoReferenceUpload = (target: 'start' | 'end') => {
-      setUploadTarget(target);
-      referenceImageInputRef.current?.click();
-  };
-
-  const handleReferenceImageFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
-      if (file) {
-          const reader = new FileReader();
-          reader.onload = () => {
-               const b64 = reader.result as string;
-               if (uploadTarget === 'start') setVeoStartImg(b64);
-               else setVeoEndImg(b64);
-          };
-          reader.readAsDataURL(file);
-      }
-      e.target.value = '';
-  };
+  const handleAddMedia = handleFileUpload; // ALIAS FOR JSX
 
   const handleGenerate = async () => {
       if (mediaModalTrackId === null) return;
@@ -825,10 +809,373 @@ export default function App() {
           setIsExporting(false);
       }
   };
+
+  const captureCurrentFrame = async (): Promise<string | null> => {
+      if (!containerRef.current) return null;
+      const width = 1280; const height = 720;
+      const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
+      const ctx = canvas.getContext('2d'); if (!ctx) return null;
+      ctx.fillStyle = '#000000'; ctx.fillRect(0, 0, width, height);
+      const visible = clips.filter(c => currentTime >= c.startTime && currentTime < c.startTime + c.duration).sort((a, b) => a.trackId - b.trackId);
+      for (const clip of visible) {
+           if (clip.type === 'audio') continue;
+           if (clip.type === 'text') { drawClipToCanvas(ctx, clip, null, width, height); } 
+           else {
+               const el = mediaRefs.current[clip.id] as HTMLVideoElement | null;
+               if (clip.type === 'video' && el) { drawClipToCanvas(ctx, clip, el, width, height); } 
+               else if (clip.type === 'image') {
+                   const img = new Image(); img.crossOrigin = "anonymous"; img.src = clip.sourceUrl || '';
+                   await new Promise((resolve) => { if (img.complete) resolve(true); img.onload = () => resolve(true); img.onerror = () => resolve(false); });
+                   drawClipToCanvas(ctx, clip, img, width, height);
+               }
+           }
+      }
+      return canvas.toDataURL('image/jpeg', 0.8);
+  };
+
+  // --- OBSERVATION RECORDING ---
+  const handleRequestObservation = async (): Promise<string[]> => {
+      setIsVerifying(true);
+      setIsPlaying(false);
+      setCurrentTime(0);
+      await new Promise(r => setTimeout(r, 200));
+      const duration = clips.reduce((max, c) => Math.max(max, c.startTime + c.duration), 0) || 10;
+      const capturedFrames: string[] = [];
+      setIsPlaying(true);
+      
+      return new Promise((resolve) => {
+          const checkInterval = setInterval(async () => {
+              const frame = await captureCurrentFrame();
+              if (frame) capturedFrames.push(frame);
+              if (currentTimeRef.current >= duration) {
+                  clearInterval(checkInterval);
+                  setIsPlaying(false);
+                  setIsVerifying(false);
+                  resolve(capturedFrames);
+              }
+          }, 1000);
+      });
+  };
+
+  // --- AGENTS ---
+  const eyes = new EyesAgent();
+  const brain = new BrainAgent();
+  const hands = new HandsAgent();
+  const verifier = new VerifierAgent();
   
-  // Render
+  const loop = new AgenticLoop(
+    eyes,
+    brain,
+    hands,
+    verifier,
+    (agent, thought, toolAction) => {
+        setChatHistory(prev => [...prev, {
+            role: 'agent',
+            agentType: agent,
+            text: thought,
+            toolAction: toolAction 
+        }]);
+    },
+    handleRequestObservation 
+  );
+
+  const executePlanStep = async (stepIndex: number, plan: EditPlan, initialIntent: string) => {
+      if (!plan || stepIndex >= plan.steps.length) {
+          if (plan) {
+              await loop.verify(initialIntent, [], timelineStore.getClips());
+              setActivePlan(null); 
+          }
+          setIsProcessing(false);
+          return;
+      }
+
+      const step = plan.steps[stepIndex];
+      setCurrentStepIndex(stepIndex);
+      
+      setActivePlan(prev => {
+          if (!prev) return null;
+          const newSteps = [...prev.steps];
+          newSteps[stepIndex] = { ...newSteps[stepIndex], status: 'generating' };
+          return { ...prev, steps: newSteps };
+      });
+
+      try {
+          const result = await loop.executeStep(step);
+          
+          if (result.approvalRequired) {
+              setPendingApproval(result.approvalRequired);
+              return;
+          }
+
+          if (result.success) {
+              setActivePlan(prev => {
+                  if (!prev) return null;
+                  const newSteps = [...prev.steps];
+                  newSteps[stepIndex] = { ...newSteps[stepIndex], status: 'completed' };
+                  return { ...prev, steps: newSteps };
+              });
+              await executePlanStep(stepIndex + 1, plan, initialIntent);
+          }
+      } catch (e) {
+          console.error("Step execution failed", e);
+          setIsProcessing(false);
+      }
+  };
+
+  const handleRunAgentLoop = async (message: string) => {
+    setIsProcessing(true);
+    setChatHistory(prev => [...prev, { role: 'user', text: message }]);
+    setActivePlan(null); 
+    setCurrentStepIndex(0);
+
+    try {
+        const context = {
+            clips: timelineStore.getClips(),
+            selectedClipIds,
+            currentTime,
+            range: liveScopeRange || { start: 0, end: 0 }
+        };
+        
+        const plan = await loop.plan(message, context, mediaRefs.current);
+        
+        if (plan) {
+            setActivePlan(plan);
+            await executePlanStep(0, plan, message);
+        } else {
+            setIsProcessing(false);
+        }
+
+    } catch (e) {
+        setChatHistory(prev => [...prev, { role: 'system', text: "Agent loop failed unexpectedly." }]);
+        console.error(e);
+        setIsProcessing(false);
+    } 
+  };
+
+  const handleExecuteAIAction = async (action: ToolAction) => {
+      if (action.tool_id === 'REPLAN_REQUEST') {
+          const fixPrompt = action.parameters?.prompt || action.reasoning;
+          await handleRunAgentLoop(fixPrompt);
+          return;
+      }
+
+      if (action.tool_id === 'USER_ACTION_REQUEST') {
+          if (action.button_label.includes("Upload")) {
+              triggerLocalUpload();
+          }
+          return;
+      }
+
+      setIsGenerating(true);
+      await hands.execute({ 
+          operation: action.tool_id.toLowerCase(), 
+          parameters: action.parameters, 
+          intent: action.reasoning 
+      });
+      setIsGenerating(false);
+  };
+
+  const handleApprovalConfirm = async (params: any) => {
+      if (!pendingApproval || !activePlan) return;
+      
+      const { tool } = pendingApproval;
+      setPendingApproval(null);
+      setIsGenerating(true); 
+      
+      setChatHistory(prev => [...prev, { 
+          role: 'system', 
+          text: `🚀 Starting generation for step ${currentStepIndex + 1}/${activePlan.steps.length}...` 
+      }]);
+      
+      try {
+          const currentClips = timelineStore.getClips();
+          const maxTrack = currentClips.length > 0 ? Math.max(...currentClips.map(c => c.trackId)) : 0;
+          let targetTrackId = Number(params.trackId);
+          if (isNaN(targetTrackId)) targetTrackId = maxTrack + 1;
+          const rawInsertTime = Number(params.insertTime);
+          const safeStartTime = isNaN(rawInsertTime) ? 0 : rawInsertTime;
+          const rawDuration = Number(params.duration);
+          const safeDuration = (isNaN(rawDuration) || rawDuration <= 0) ? 4 : rawDuration;
+
+          if (tool === 'generate_video_asset') {
+              const videoUrl = await generateVideo(params.prompt, params.model || 'veo-3.1-fast-generate-preview', '16:9', '720p', safeDuration);
+              timelineStore.addClip({
+                id: `gen-vid-${Date.now()}`,
+                title: `Veo: ${params.prompt.slice(0, 15)}...`,
+                type: 'video',
+                startTime: safeStartTime,
+                duration: safeDuration,
+                sourceStartTime: 0,
+                sourceUrl: videoUrl,
+                trackId: targetTrackId,
+                volume: 1,
+                speed: 1,
+                transform: { x: 0, y: 0, scale: 1, rotation: 0 }
+              });
+          } else if (tool === 'generate_image_asset') {
+              const base64Img = await generateImage(params.prompt, params.model || 'gemini-2.5-flash-image');
+              const imgUrl = `data:image/png;base64,${base64Img}`;
+              timelineStore.addClip({
+                id: `gen-img-${Date.now()}`,
+                title: `Img: ${params.prompt.slice(0, 15)}...`,
+                type: 'image',
+                startTime: safeStartTime,
+                duration: safeDuration || 5,
+                sourceStartTime: 0,
+                sourceUrl: imgUrl,
+                trackId: targetTrackId,
+                transform: { x: 0, y: 0, scale: 1, rotation: 0 }
+              });
+          } else if (tool === 'generate_voiceover') {
+              const audioUrl = await generateSpeech(params.text, params.voice || 'Kore');
+              const tempAudio = new Audio(audioUrl);
+              await new Promise<void>((resolve) => { tempAudio.onloadedmetadata = () => resolve(); tempAudio.onerror = () => resolve(); });
+              timelineStore.addClip({
+                id: `vo-${Date.now()}`,
+                title: `VO: ${params.text.slice(0, 15)}...`,
+                type: 'audio',
+                startTime: safeStartTime,
+                duration: tempAudio.duration || 5,
+                sourceStartTime: 0,
+                sourceUrl: audioUrl,
+                trackId: targetTrackId,
+                volume: 1,
+                speed: 1,
+                transform: { x: 0, y: 0, scale: 1, rotation: 0 }
+              });
+          }
+          
+          setChatHistory(prev => [...prev, { role: 'system', text: "✅ Asset generated successfully." }]);
+          setActivePlan(prev => {
+              if (!prev) return null;
+              const newSteps = [...prev.steps];
+              newSteps[currentStepIndex] = { ...newSteps[currentStepIndex], status: 'completed' };
+              return { ...prev, steps: newSteps };
+          });
+          await executePlanStep(currentStepIndex + 1, activePlan, activePlan.goal);
+
+      } catch (e: any) {
+          console.error("Generation Error:", e);
+          setChatHistory(prev => [...prev, { role: 'system', text: `❌ Generation failed: ${e.message}` }]);
+          setIsProcessing(false);
+      } finally {
+          setIsGenerating(false);
+      }
+  };
+  
+  useEffect(() => {
+    let animationFrameId: number;
+    let lastTimestamp = performance.now();
+    const updateLoop = (timestamp: number) => {
+      const dt = (timestamp - lastTimestamp) / 1000;
+      lastTimestamp = timestamp;
+      if (isPlaying) setCurrentTime((prevTime) => prevTime + dt);
+      animationFrameId = requestAnimationFrame(updateLoop);
+    };
+    if (isPlaying) {
+        lastTimestamp = performance.now();
+        animationFrameId = requestAnimationFrame(updateLoop);
+    } else {
+        Object.values(mediaRefs.current).forEach((el) => { (el as any)?.pause(); });
+    }
+    return () => cancelAnimationFrame(animationFrameId);
+  }, [isPlaying]);
+
+  useEffect(() => {
+      clips.forEach(clip => {
+          if (clip.type !== 'video' && clip.type !== 'audio') return;
+          const mediaEl = mediaRefs.current[clip.id];
+          if (!mediaEl) return;
+          const isActive = currentTime >= clip.startTime && currentTime < (clip.startTime + clip.duration);
+          if (isActive) {
+              const relativeTime = currentTime - clip.startTime;
+              const targetTime = clip.sourceStartTime + (relativeTime * (clip.speed || 1));
+              if (Math.abs(mediaEl.currentTime - targetTime) > 0.25) mediaEl.currentTime = targetTime;
+              if (isPlaying) { if (mediaEl.paused) mediaEl.play().catch(() => {}); } 
+              else { if (!mediaEl.paused) mediaEl.pause(); }
+              mediaEl.muted = false; mediaEl.volume = clip.volume ?? 1; mediaEl.playbackRate = clip.speed ?? 1;
+          } else {
+              if (!mediaEl.paused) mediaEl.pause(); mediaEl.muted = true;
+          }
+      });
+  }, [currentTime, isPlaying, clips]);
+
+  const handleUndo = () => timelineStore.undo();
+  const handleRedo = () => timelineStore.redo();
+  const handleDelete = (ids: string[]) => ids.forEach(id => timelineStore.removeClip(id));
+  
+  useEffect(() => {
+      const handleGlobalKeyDown = (e: KeyboardEvent) => {
+          if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+          const isMod = e.ctrlKey || e.metaKey;
+          if (e.code === 'Space') { e.preventDefault(); togglePlay(); } 
+          else if (e.key === 'Backspace' || e.key === 'Delete') { handleDelete(selectedClipIds); } 
+          else if (isMod && e.key === 'z') { e.preventDefault(); if (e.shiftKey) handleRedo(); else handleUndo(); } 
+      };
+      window.addEventListener('keydown', handleGlobalKeyDown);
+      return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+  }, [selectedClipIds, togglePlay]);
+
+  const handleSeek = (time: number) => { setCurrentTime(Math.max(0, time)); setIsPlaying(false); };
+  const handleSelectClip = (id: string, e: React.MouseEvent) => {
+    if (e.shiftKey) setSelectedClipIds(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
+    else setSelectedClipIds([id]);
+  };
+  const handleCanvasClick = () => setSelectedClipIds([]);
+
+  const updateClip = (id: string, updates: Partial<Clip>) => timelineStore.updateClip(id, updates);
+  const handleUpdateClipTransform = (id: string, newTransform: NonNullable<Clip['transform']>) => updateClip(id, { transform: newTransform });
+  const handleUpdateTextContent = (id: string, text: string) => updateClip(id, { text });
+  const handleUpdateTextStyle = (updates: any) => primarySelectedClip && updateClip(primarySelectedClip.id, { textStyle: { ...primarySelectedClip.textStyle, ...updates } });
+  const handleClipSpeed = (id: string, speed: number) => updateClip(id, { speed });
+  const handleClipVolume = (id: string, volume: number) => updateClip(id, { volume });
+  
+  const handleClipResize = (id: string, newDuration: number, mode: 'start' | 'end', commit: boolean) => {
+      if (commit) { timelineStore.updateClip(id, { duration: newDuration }); }
+  };
+  const handleClipReorder = (id: string, newStartTime: number, targetTrackId: number, commit: boolean) => {
+      if (commit) timelineStore.moveClip(id, newStartTime, targetTrackId);
+  };
+  
+  const handleAddTrack = (position: 'top' | 'bottom') => {
+      setTracks(prev => {
+          const newId = Math.max(...prev) + 1;
+          return position === 'top' ? [...prev, newId] : [newId, ...prev];
+      });
+  };
+
+  const handleRangeSelected = () => { setRangeModalOpen(true); };
+  const handleSplitClip = () => { if (primarySelectedClip) { timelineStore.splitClip(primarySelectedClip.id, currentTime); } };
+
+  const handleRangeConfirm = (range: { start: number, end: number }) => { setLiveScopeRange(range); setRangeModalOpen(false); };
+  const handleCaptureFrame = async (target: 'start' | 'end') => {
+      const frame = await captureCurrentFrame();
+      if (frame) { if (target === 'start') setVeoStartImg(frame); else setVeoEndImg(frame); }
+  };
+  const handleVeoReferenceUpload = (target: 'start' | 'end') => { setUploadTarget(target); referenceImageInputRef.current?.click(); };
+  const handleReferenceImageFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (file) {
+          const reader = new FileReader();
+          reader.onload = () => { const b64 = reader.result as string; if (uploadTarget === 'start') setVeoStartImg(b64); else setVeoEndImg(b64); };
+          reader.readAsDataURL(file);
+      }
+      e.target.value = '';
+  };
+
   return (
-    <div className="flex flex-col h-screen bg-neutral-950 text-neutral-100 font-sans overflow-hidden">
+    <div className={`flex flex-col h-screen bg-neutral-950 text-neutral-100 font-sans overflow-hidden transition-all duration-300 ${isVerifying ? 'ring-4 ring-yellow-500/50 scale-[0.99]' : ''}`}>
+      {isVerifying && (
+          <div className="fixed inset-0 z-[9999] pointer-events-none flex flex-col">
+              <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,transparent_0%,rgba(234,179,8,0.1)_100%)] animate-pulse" />
+              <div className="w-full bg-yellow-500/90 text-black py-1 text-center font-bold text-xs uppercase tracking-widest shadow-lg flex items-center justify-center gap-2">
+                  <ShieldCheck size={14} className="animate-pulse" /> Verification in Progress - Recording Playback View
+              </div>
+              <div className="flex-1 border-[6px] border-yellow-500/20" />
+          </div>
+      )}
+
+      <GenerationApprovalModal isOpen={!!pendingApproval} onClose={() => { setPendingApproval(null); setIsProcessing(false); }} onConfirm={handleApprovalConfirm} request={pendingApproval} />
       <RangeEditorModal isOpen={rangeModalOpen} onClose={() => { setRangeModalOpen(false); setIsSelectingScope(false); }} onConfirm={handleRangeConfirm} initialRange={liveScopeRange || { start: 0, end: 5 }} clips={clips} mediaRefs={mediaRefs} />
       <input type="file" multiple accept="video/*,image/*,audio/*" className="hidden" ref={fileInputRef} onChange={handleAddMedia} />
       <input type="file" accept="image/*" className="hidden" ref={referenceImageInputRef} onChange={handleReferenceImageFileChange} />
@@ -935,15 +1282,19 @@ export default function App() {
         <aside className="w-80 border-l border-neutral-800 bg-neutral-900 flex flex-col z-[150] relative">
           <AIAssistant 
             selectedClip={primarySelectedClip} 
+            selectedClipIds={selectedClipIds}
             onRequestRangeSelect={() => {}}
             isSelectingRange={isSelectingScope} 
             timelineRange={liveScopeRange}
+            currentTime={currentTime}
             allClips={clips}
             mediaRefs={mediaRefs}
             onExecuteAction={handleExecuteAIAction}
             onRunAgentLoop={handleRunAgentLoop}
             chatHistory={chatHistory}
             isProcessing={isProcessing}
+            activePlan={activePlan}
+            currentStepIndex={currentStepIndex}
           />
         </aside>
       </div>
