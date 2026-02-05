@@ -8,7 +8,7 @@ export interface HandsOutput {
   changes: string[];
   error?: string;
   actionRequired?: { message: string, type: string };
-  approvalRequired?: { tool: string, params: any };
+  approvalRequired?: { tool: string, params: any, reasoning?: string };
 }
 
 export class HandsAgent {
@@ -37,7 +37,8 @@ export class HandsAgent {
               changes: [],
               approvalRequired: {
                   tool: operation,
-                  params: parameters
+                  params: parameters,
+                  reasoning: intent // Pass the reasoning to the UI
               }
           };
       }

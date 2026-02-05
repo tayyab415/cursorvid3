@@ -57,7 +57,6 @@ export class VerifierAgent {
 
     // CHECK: Audio extending beyond visuals (Blank Screen / "Radio Mode")
     const audioClips = postState.filter(c => c.type === 'audio');
-    let audioExceedsVisuals = false;
     
     if (audioClips.length > 0 && visualClips.length > 0) {
         const maxVisualEnd = Math.max(...visualClips.map(c => c.startTime + c.duration));
@@ -65,9 +64,25 @@ export class VerifierAgent {
         
         // Allow a small tolerance (0.5s)
         if (maxAudioEnd > maxVisualEnd + 0.5) {
-            audioExceedsVisuals = true;
             const diff = (maxAudioEnd - maxVisualEnd).toFixed(1);
             structuralIssues.push(`CRITICAL: The audio continues for ${diff}s after the video ends (Blank Screen).`);
+        }
+    }
+
+    // CHECK: Overlapping Audio (Clashing Voiceovers)
+    // Sort audio clips by start time
+    const sortedAudio = [...audioClips].sort((a, b) => a.startTime - b.startTime);
+    for (let i = 0; i < sortedAudio.length - 1; i++) {
+        const current = sortedAudio[i];
+        const next = sortedAudio[i+1];
+        
+        const overlapStart = Math.max(current.startTime, next.startTime);
+        const overlapEnd = Math.min(current.startTime + current.duration, next.startTime + next.duration);
+        const overlapDuration = overlapEnd - overlapStart;
+
+        // If overlap is significant (> 0.5s) and they are likely speech (based on title usually containing VO or Speech or just assumed for safety)
+        if (overlapDuration > 0.5) {
+             structuralIssues.push(`AUDIO CLASH: Audio clip "${current.title}" overlaps with "${next.title}" by ${overlapDuration.toFixed(1)}s.`);
         }
     }
 
@@ -77,7 +92,7 @@ export class VerifierAgent {
     // 2. LLM VERIFICATION (With Visual Evidence if available)
     const prompt = `
     ROLE: You are the VERIFIER.
-    TASK: Check if the editing operation "${operation}" was successful and safe.
+    TASK: Check if the editing operation "${operation}" was successful, safe, and SEMANTICALLY CORRECT.
 
     USER INTENT: "${intent}"
 
@@ -94,17 +109,23 @@ export class VerifierAgent {
     ${visualEvidence.length > 0 ? `I have attached ${visualEvidence.length} frames recorded from the actual playback. Each frame corresponds to ~1 second of video.` : "No visual playback available."}
 
     INSTRUCTIONS:
-    1. **Visual Confirmation**: Look at the last few frames of the Visual Evidence. If the screen is BLACK but the audio tracks are still active (see Timeline), this is a FAILURE.
-    2. **Correlate**: Do the detected structural issues actually look bad in the frames?
-    3. **Remediation**: If you find issues, write a specific, natural language command for the "Brain" agent to fix it (e.g., "Extend the last image by 5 seconds to cover the voiceover").
+    1. **Structural Check**: Review the DETECTED STRUCTURAL ISSUES. If any exist, confirm if they are fatal to the video experience.
+    2. **SEMANTIC CHECK (HIGHEST PRIORITY)**: Look at the visual evidence (if provided). Does the ACTUAL CONTENT match what was requested?
+       - **QUESTION**: "Does the video content visually represent the user's request?"
+       - **EXAMPLE**: If User asked for "dinosaurs" and you see "cats", FAIL IMMEDIATELY.
+       - **EXAMPLE**: If User asked for "text overlay" and you see none, FAIL.
+       - **EXAMPLE**: If User asked for "high energy" and the frames look static/boring, FAIL.
+    3. **Remediation**: If you find issues (structural OR semantic), write a specific, natural language command for the "Brain" agent to fix it.
+       - If audio overlaps, suggest moving one clip.
+       - If content is wrong, suggest generating new assets.
     
     OUTPUT JSON SCHEMA:
     {
-      "thought": "First-person analysis. Explicitly mention if you see a black screen in the evidence.",
+      "thought": "First-person analysis. Critically evaluate if the content matches the intent.",
       "passed": boolean,
       "checks": {
         "structural": { "passed": boolean, "issues": ["string"] },
-        "intentAlignment": { "passed": boolean, "reasoning": "string" }
+        "intentAlignment": { "passed": boolean, "reasoning": "string (e.g. 'Visuals do not match request for X')" }
       },
       "suggestion": "string (polite advice)",
       "remediation": "string (imperative command to fix the issue)"
@@ -119,11 +140,13 @@ export class VerifierAgent {
         // Limit to 20 frames max for bandwidth/token sanity
         const step = Math.ceil(visualEvidence.length / 20);
         for(let i=0; i<visualEvidence.length; i+=step) {
-            const b64 = visualEvidence[i].includes(',') ? visualEvidence[i].split(',')[1] : visualEvidence[i];
-            parts.push({
-                inlineData: { mimeType: 'image/jpeg', data: b64 }
-            });
-            parts.push({ text: `[Playback Frame at ${i}s]` });
+            if (visualEvidence[i] && typeof visualEvidence[i] === 'string') {
+                const b64 = visualEvidence[i].includes(',') ? visualEvidence[i].split(',')[1] : visualEvidence[i];
+                parts.push({
+                    inlineData: { mimeType: 'image/jpeg', data: b64 }
+                });
+                parts.push({ text: `[Playback Frame at ${i}s]` });
+            }
         }
     }
 
@@ -138,19 +161,41 @@ export class VerifierAgent {
         });
         
         const text = response.text || "{}";
-        let result = JSON.parse(text);
+        let result: any = {};
         
+        try {
+            result = JSON.parse(text);
+        } catch (e) {
+            console.warn("Verifier JSON parse error, using fallback structure", e);
+        }
+        
+        // --- SAFEGUARD: Default missing fields to prevent crashes ---
+        if (!result.checks) {
+            result.checks = {
+                structural: { passed: true, issues: [] },
+                intentAlignment: { passed: true, reasoning: "Defaulted due to missing LLM output" }
+            };
+        }
+        if (!result.checks.structural) {
+            result.checks.structural = { passed: true, issues: [] };
+        }
+        if (!result.checks.intentAlignment) {
+            result.checks.intentAlignment = { passed: true, reasoning: "Defaulted" };
+        }
+        if (result.passed === undefined) result.passed = true;
+        // ------------------------------------------------------------
+
         // Failsafe: If structural issues exist but LLM said passed, override it.
         if (structuralIssues.length > 0 && result.passed) {
             result.passed = false;
             result.checks.structural.passed = false;
-            result.checks.structural.issues = [...structuralIssues, ...result.checks.structural.issues];
+            result.checks.structural.issues = [...structuralIssues, ...(result.checks.structural.issues || [])];
             if (!result.remediation) {
-                result.remediation = "Fix the detected timeline structural errors.";
+                result.remediation = `Fix the detected timeline errors: ${structuralIssues.join(', ')}`;
             }
         }
 
-        return result;
+        return result as VerifierOutput;
 
     } catch (e) {
         console.error("Verification failed", e);
@@ -160,7 +205,7 @@ export class VerifierAgent {
             passed: structuralIssues.length === 0,
             checks: {
                 structural: { passed: structuralIssues.length === 0, issues: structuralIssues },
-                intentAlignment: { passed: true, reasoning: "Skipped" }
+                intentAlignment: { passed: true, reasoning: "Skipped due to API error" }
             },
             suggestion: structuralIssues.length > 0 ? "Check timeline for gaps." : undefined,
             remediation: structuralIssues.length > 0 ? "Fix the timeline gaps or overlaps." : undefined

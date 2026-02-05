@@ -70,14 +70,16 @@ export class BrainAgent {
     INSTRUCTIONS:
     1. **APPENDING CONTENT**: If adding an Outro or End Screen, use 'insertTime' = ${timelineDuration.toFixed(2)}. Do NOT put it at 0.
     2. **PRIORITIZE GENERATION**: If the user asks to "create", "generate", or "make" something (like an intro) and you don't have the files, DO NOT ask them to upload. Use 'generate_video_asset' or 'generate_image_asset'.
-    3. **STYLE MATCHING (CRITICAL)**: When calling 'generate_video_asset' or 'generate_image_asset', you MUST incorporate the 'Visual Style' detected by Eyes.
-       - INSTEAD OF: "A generic intro video"
-       - USE: "A video representing [Topic] with style: ${detectedStyle}"
-    4. **MODEL SELECTION**: 
-       - For 'generate_video_asset': Use 'veo-3.1-fast-generate-preview' for quick drafts or simple concepts. Use 'veo-3.1-generate-preview' for high-quality, complex, or cinematic requests.
-       - For 'generate_image_asset': Use 'gemini-2.5-flash-image' by default. Use 'gemini-3-pro-image-preview' for detailed art or text rendering.
-    5. **AUTONOMY**: Be decisive.
-    6. **REFERENCING**: Use specific Clip IDs from the TIMELINE STATE in your plan operations.
+    3. **STYLE MATCHING & MODEL SELECTION (CRITICAL)**: 
+       - Always incorporate the detected 'Visual Style' into your prompts.
+       - **Video Model**:
+         - Use 'veo-3.1-generate-preview' (High Quality) IF the request implies "Cinematic", "Final", "High Quality", "Realistic", or if the existing footage is high fidelity.
+         - Use 'veo-3.1-fast-generate-preview' (Fast) IF the request is "Draft", "Quick", "Storyboard", "Cartoon", or simple animation.
+       - **Image Model**:
+         - Use 'gemini-3-pro-image-preview' (High Quality) for complex art, text rendering, or photorealism.
+         - Use 'gemini-2.5-flash-image' (Fast) for simple icons, gradients, or quick mockups.
+    4. **AUTONOMY**: Be decisive.
+    5. **REFERENCING**: Use specific Clip IDs from the TIMELINE STATE in your plan operations.
     
     OUTPUT JSON SCHEMA:
     {

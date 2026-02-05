@@ -12,7 +12,7 @@ import {
   Sparkles, Scissors, Gauge, Download, Volume2, VolumeX, X, 
   Image as ImageIcon, Film, Mic, Camera, Trash2, Info, Captions, 
   Type, Bold, Italic, Underline, AlignCenter, AlignLeft, AlignRight, 
-  Check, ChevronLeft, ShieldCheck 
+  Check, ChevronLeft, ShieldCheck, Brain
 } from 'lucide-react';
 import { timelineStore } from './timeline/store';
 
@@ -376,7 +376,7 @@ const GenerationApprovalModal = ({
     isOpen: boolean, 
     onClose: () => void, 
     onConfirm: (params: any) => void, 
-    request: { tool: string, params: any } | null 
+    request: { tool: string, params: any, reasoning?: string } | null 
 }) => {
     if (!isOpen || !request) return null;
 
@@ -429,6 +429,19 @@ const GenerationApprovalModal = ({
                 
                 <div className="flex-1 p-6 overflow-y-auto bg-neutral-950/50">
                     <div className="max-w-xl mx-auto space-y-6">
+                        
+                        {/* Reasoning Block */}
+                        {request.reasoning && (
+                            <div className="bg-gradient-to-r from-blue-900/20 to-purple-900/20 border border-blue-500/20 rounded-xl p-4">
+                                <div className="flex items-center gap-2 mb-2 text-blue-300 font-bold text-xs uppercase tracking-wider">
+                                    <Brain size={12} /> Planner's Intent
+                                </div>
+                                <p className="text-sm text-neutral-300 leading-relaxed italic">
+                                    "{request.reasoning}"
+                                </p>
+                            </div>
+                        )}
+
                         {/* Common: Prompt / Text */}
                         <div>
                             <label className="block text-sm font-medium text-neutral-400 mb-2">
@@ -606,7 +619,7 @@ export default function App() {
   
   const [activePlan, setActivePlan] = useState<EditPlan | null>(null);
   const [currentStepIndex, setCurrentStepIndex] = useState(0);
-  const [pendingApproval, setPendingApproval] = useState<{ tool: string, params: any } | null>(null);
+  const [pendingApproval, setPendingApproval] = useState<{ tool: string, params: any, reasoning?: string } | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null); 
   const canvasRef = useRef<HTMLCanvasElement>(null); 
@@ -989,13 +1002,63 @@ export default function App() {
       }]);
       
       try {
-          // Use the Registry to execute the approved tool
-          const result = await executeTool(tool, params);
-          
-          if (!result.success) {
-               throw new Error(result.error || "Unknown execution error");
-          }
+          const currentClips = timelineStore.getClips();
+          const maxTrack = currentClips.length > 0 ? Math.max(...currentClips.map(c => c.trackId)) : 0;
+          let targetTrackId = Number(params.trackId);
+          if (isNaN(targetTrackId)) targetTrackId = maxTrack + 1;
+          const rawInsertTime = Number(params.insertTime);
+          const safeStartTime = isNaN(rawInsertTime) ? 0 : rawInsertTime;
+          const rawDuration = Number(params.duration);
+          const safeDuration = (isNaN(rawDuration) || rawDuration <= 0) ? 4 : rawDuration;
 
+          if (tool === 'generate_video_asset') {
+              const videoUrl = await generateVideo(params.prompt, params.model || 'veo-3.1-fast-generate-preview', '16:9', '720p', safeDuration);
+              timelineStore.addClip({
+                id: `gen-vid-${Date.now()}`,
+                title: `Veo: ${params.prompt.slice(0, 15)}...`,
+                type: 'video',
+                startTime: safeStartTime,
+                duration: safeDuration,
+                sourceStartTime: 0,
+                sourceUrl: videoUrl,
+                trackId: targetTrackId,
+                volume: 1,
+                speed: 1,
+                transform: { x: 0, y: 0, scale: 1, rotation: 0 }
+              });
+          } else if (tool === 'generate_image_asset') {
+              const base64Img = await generateImage(params.prompt, params.model || 'gemini-2.5-flash-image');
+              const imgUrl = `data:image/png;base64,${base64Img}`;
+              timelineStore.addClip({
+                id: `gen-img-${Date.now()}`,
+                title: `Img: ${params.prompt.slice(0, 15)}...`,
+                type: 'image',
+                startTime: safeStartTime,
+                duration: safeDuration || 5,
+                sourceStartTime: 0,
+                sourceUrl: imgUrl,
+                trackId: targetTrackId,
+                transform: { x: 0, y: 0, scale: 1, rotation: 0 }
+              });
+          } else if (tool === 'generate_voiceover') {
+              const audioUrl = await generateSpeech(params.text, params.voice || 'Kore');
+              const tempAudio = new Audio(audioUrl);
+              await new Promise<void>((resolve) => { tempAudio.onloadedmetadata = () => resolve(); tempAudio.onerror = () => resolve(); });
+              timelineStore.addClip({
+                id: `vo-${Date.now()}`,
+                title: `VO: ${params.text.slice(0, 15)}...`,
+                type: 'audio',
+                startTime: safeStartTime,
+                duration: tempAudio.duration || 5,
+                sourceStartTime: 0,
+                sourceUrl: audioUrl,
+                trackId: targetTrackId,
+                volume: 1,
+                speed: 1,
+                transform: { x: 0, y: 0, scale: 1, rotation: 0 }
+              });
+          }
+          
           setChatHistory(prev => [...prev, { role: 'system', text: "✅ Asset generated successfully." }]);
           setActivePlan(prev => {
               if (!prev) return null;

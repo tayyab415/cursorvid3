@@ -119,18 +119,36 @@ const drawClipToContext = (
  * STORYBOARD MODE
  * Extracts a representative frame from EVERY clip to help the AI understand
  * the entire inventory of assets for rearrangement.
+ * 
+ * OPTIMIZATION: If clip count > 12, we sample frames to prevent token explosion,
+ * while still sending text metadata for all clips.
  */
 export const storyboardToGeminiParts = async (
     clips: Clip[]
 ): Promise<any[]> => {
     const parts: any[] = [];
+    const MAX_VISUAL_SAMPLES = 12;
     
     parts.push({ text: "INVENTORY ANALYSIS (Storyboard Mode): Analyzing individual clips to determine best arrangement." });
 
-    for (const clip of clips) {
+    // Determine sampling stride
+    const step = clips.length > MAX_VISUAL_SAMPLES ? Math.ceil(clips.length / MAX_VISUAL_SAMPLES) : 1;
+
+    for (let i = 0; i < clips.length; i++) {
+        const clip = clips[i];
+        const shouldIncludeVisual = i % step === 0;
+
         if (clip.type === 'audio') {
              parts.push({ text: `[Clip ${clip.id}] Type: AUDIO. Title: "${clip.title}". Duration: ${clip.duration}s.` });
              continue;
+        }
+
+        // Always include metadata
+        let desc = `[Clip ${clip.id}] Type: ${clip.type.toUpperCase()}. Title: "${clip.title}".`;
+        
+        if (!shouldIncludeVisual) {
+            parts.push({ text: `${desc} (Visual skipped for efficiency)` });
+            continue;
         }
 
         // For video/image, grab a frame from the middle
@@ -151,10 +169,6 @@ export const storyboardToGeminiParts = async (
                  }
             } else if (clip.type === 'video' && clip.sourceUrl) {
                  base64 = await captureFrameFromVideoUrl(clip.sourceUrl, midPoint);
-                 // Downscale if capture returned high res (captureFrame usually returns full res)
-                 // For token efficiency in survey mode, we rely on the backend capture or just send it.
-                 // To save tokens, let's assume captureFrameFromVideoUrl is reasonably sized or Gemini handles it.
-                 // Actually, let's strip the prefix if it exists
                  if (base64.includes(',')) base64 = base64.split(',')[1];
             }
         } catch (e) {
@@ -165,9 +179,9 @@ export const storyboardToGeminiParts = async (
             parts.push({
                 inlineData: { mimeType: 'image/jpeg', data: base64 }
             });
-            parts.push({ text: `[Clip ${clip.id}] Type: ${clip.type.toUpperCase()}. Title: "${clip.title}". Content shown above.` });
+            parts.push({ text: `${desc} Content shown above.` });
         } else {
-            parts.push({ text: `[Clip ${clip.id}] Type: ${clip.type.toUpperCase()}. Title: "${clip.title}". (No visual available)` });
+            parts.push({ text: `${desc} (No visual available)` });
         }
     }
     
