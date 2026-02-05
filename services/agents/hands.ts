@@ -1,5 +1,5 @@
 
-import { executeTool } from '../toolRegistry';
+import { executeTool, getToolDefinition } from '../toolRegistry';
 import { timelineStore } from '../../timeline/store';
 
 export interface HandsOutput {
@@ -20,25 +20,25 @@ export class HandsAgent {
       // Simulate "work" time for UI visibility
       await new Promise(r => setTimeout(r, 600));
 
-      // INTERCEPTION LOGIC FOR GENERATION TOOLS
-      if (['generate_video_asset', 'generate_image_asset', 'generate_voiceover'].includes(operation)) {
-          // If the brain specified a track that might be risky (0 or 1), or none, let UI verify.
-          // Note: The registry handles defaults, but here we want to ensure the USER sees a safe default in the modal.
-          const clips = timelineStore.getClips();
-          const safeTrack = clips.length === 0 ? 1 : Math.max(...clips.map(c => c.trackId)) + 1;
+      const toolDef = getToolDefinition(operation);
 
+      // Check if tool requires approval via metadata
+      if (toolDef && toolDef.requiresApproval) {
+          // Safety defaults for generation parameters
           if (parameters.trackId === undefined || parameters.trackId < 2) {
+              const clips = timelineStore.getClips();
+              const safeTrack = clips.length === 0 ? 1 : Math.max(...clips.map(c => c.trackId)) + 1;
               parameters.trackId = safeTrack;
           }
 
           return {
-              thought: `Preparing to generate content (${operation}). Pausing for user approval on parameters.`,
+              thought: `Preparing to execute ${operation}. Pausing for user approval on parameters.`,
               success: true,
               changes: [],
               approvalRequired: {
                   tool: operation,
                   params: parameters,
-                  reasoning: intent // Pass the reasoning to the UI
+                  reasoning: intent
               }
           };
       }

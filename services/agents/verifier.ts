@@ -1,7 +1,7 @@
 
 import { Clip } from '../../types';
 import { getAiClient } from '../gemini';
-import { Type } from '@google/genai';
+import { runStructuralChecks } from './checkRegistry';
 
 export interface VerifierOutput {
   thought: string;
@@ -11,7 +11,7 @@ export interface VerifierOutput {
     intentAlignment: { passed: boolean, reasoning: string };
   };
   suggestion?: string;
-  remediation?: string; // New field for specific fix instructions
+  remediation?: string;
 }
 
 export class VerifierAgent {
@@ -23,71 +23,10 @@ export class VerifierAgent {
     visualEvidence: string[] = []
   ): Promise<VerifierOutput> {
     
-    // 1. DETERMINISTIC CHECKS
-    const structuralIssues: string[] = [];
-    
-    // Check for negative durations or NaNs
-    postState.forEach(c => {
-        if (c.duration <= 0.1) structuralIssues.push(`Clip "${c.title}" is too short (<0.1s).`);
-        if (Number.isNaN(c.startTime)) structuralIssues.push(`Clip "${c.title}" has an invalid start time.`);
-    });
-
-    // Check for Occlusion (New clips hidden behind others)
-    const preIds = new Set(preState.map(c => c.id));
-    const newClips = postState.filter(c => !preIds.has(c.id));
-
-    // Get max visual track to understand layering
-    const visualClips = postState.filter(c => ['video', 'image', 'text'].includes(c.type || ''));
-    
-    for (const newClip of newClips) {
-        if (['video', 'image', 'text'].includes(newClip.type || '')) {
-            // Find clips on HIGHER tracks that overlap
-            const occluders = visualClips.filter(c => 
-                c.id !== newClip.id && 
-                c.trackId > newClip.trackId && 
-                Math.max(c.startTime, newClip.startTime) < Math.min(c.startTime + c.duration, newClip.startTime + newClip.duration)
-            );
-
-            if (occluders.length > 0) {
-                const blockingClip = occluders[0];
-                structuralIssues.push(`The new clip "${newClip.title}" is covered by "${blockingClip.title}" on Track ${blockingClip.trackId + 1}.`);
-            }
-        }
-    }
-
-    // CHECK: Audio extending beyond visuals (Blank Screen / "Radio Mode")
-    const audioClips = postState.filter(c => c.type === 'audio');
-    
-    if (audioClips.length > 0 && visualClips.length > 0) {
-        const maxVisualEnd = Math.max(...visualClips.map(c => c.startTime + c.duration));
-        const maxAudioEnd = Math.max(...audioClips.map(c => c.startTime + c.duration));
-        
-        // Allow a small tolerance (0.5s)
-        if (maxAudioEnd > maxVisualEnd + 0.5) {
-            const diff = (maxAudioEnd - maxVisualEnd).toFixed(1);
-            structuralIssues.push(`CRITICAL: The audio continues for ${diff}s after the video ends (Blank Screen).`);
-        }
-    }
-
-    // CHECK: Overlapping Audio (Clashing Voiceovers)
-    // Sort audio clips by start time
-    const sortedAudio = [...audioClips].sort((a, b) => a.startTime - b.startTime);
-    for (let i = 0; i < sortedAudio.length - 1; i++) {
-        const current = sortedAudio[i];
-        const next = sortedAudio[i+1];
-        
-        const overlapStart = Math.max(current.startTime, next.startTime);
-        const overlapEnd = Math.min(current.startTime + current.duration, next.startTime + next.duration);
-        const overlapDuration = overlapEnd - overlapStart;
-
-        // If overlap is significant (> 0.5s) and they are likely speech (based on title usually containing VO or Speech or just assumed for safety)
-        if (overlapDuration > 0.5) {
-             structuralIssues.push(`AUDIO CLASH: Audio clip "${current.title}" overlaps with "${next.title}" by ${overlapDuration.toFixed(1)}s.`);
-        }
-    }
-
-    // NOTE: We do NOT return early here. We pass these findings to the LLM 
-    // so it can confirm them visually and provide a unified remediation plan.
+    // 1. RUN MODULAR CHECKS
+    const checkResults = runStructuralChecks(preState, postState);
+    const structuralIssues = checkResults.issues;
+    const remediationHints = checkResults.remediationHints;
 
     // 2. LLM VERIFICATION (With Visual Evidence if available)
     const prompt = `
@@ -105,6 +44,9 @@ export class VerifierAgent {
     DETECTED STRUCTURAL ISSUES (Math-based):
     ${structuralIssues.length > 0 ? structuralIssues.map(i => `- ${i}`).join('\n') : "No obvious math errors."}
     
+    SUGGESTED REMEDIATIONS (from System):
+    ${remediationHints.length > 0 ? remediationHints.map(i => `- ${i}`).join('\n') : "None."}
+    
     VISUAL EVIDENCE:
     ${visualEvidence.length > 0 ? `I have attached ${visualEvidence.length} frames recorded from the actual playback. Each frame corresponds to ~1 second of video.` : "No visual playback available."}
 
@@ -116,8 +58,7 @@ export class VerifierAgent {
        - **EXAMPLE**: If User asked for "text overlay" and you see none, FAIL.
        - **EXAMPLE**: If User asked for "high energy" and the frames look static/boring, FAIL.
     3. **Remediation**: If you find issues (structural OR semantic), write a specific, natural language command for the "Brain" agent to fix it.
-       - If audio overlaps, suggest moving one clip.
-       - If content is wrong, suggest generating new assets.
+       - Use the 'SUGGESTED REMEDIATIONS' as a base but refine them for the specific user intent.
     
     OUTPUT JSON SCHEMA:
     {
