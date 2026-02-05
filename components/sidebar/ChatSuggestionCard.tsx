@@ -1,7 +1,7 @@
 
 import React from 'react';
 import { ToolAction } from '../../types';
-import { Sparkles, ArrowRight, Scissors, Mic, Wand2 } from 'lucide-react';
+import { Sparkles, ArrowRight, Scissors, Mic, Wand2, Edit, Play } from 'lucide-react';
 
 interface ChatSuggestionCardProps {
   action: ToolAction;
@@ -10,16 +10,15 @@ interface ChatSuggestionCardProps {
 
 export const ChatSuggestionCard: React.FC<ChatSuggestionCardProps> = ({ action, onApply }) => {
   const getIcon = () => {
-    switch (action.tool_id) {
-      case 'GENERATE_TRANSITION':
-        return <Wand2 size={16} className="text-purple-300" />;
-      case 'GENERATE_VOICEOVER':
-        return <Mic size={16} className="text-blue-300" />;
-      case 'SMART_TRIM':
-        return <Scissors size={16} className="text-pink-300" />;
-      default:
-        return <Sparkles size={16} className="text-yellow-300" />;
-    }
+    // Normalize to handle both legacy IDs and new primitive names
+    const id = action.tool_id.toUpperCase();
+    
+    if (id.includes('TRANSITION') || id.includes('VIDEO_ASSET')) return <Wand2 size={16} className="text-purple-300" />;
+    if (id.includes('VOICEOVER') || id.includes('AUDIO')) return <Mic size={16} className="text-blue-300" />;
+    if (id.includes('TRIM') || id.includes('SPLIT') || id.includes('DELETE')) return <Scissors size={16} className="text-pink-300" />;
+    if (id.includes('IMAGE')) return <Sparkles size={16} className="text-yellow-300" />;
+    
+    return <Play size={16} className="text-green-300" />;
   };
 
   return (

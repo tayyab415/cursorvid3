@@ -1,5 +1,5 @@
 
-import { Clip, PlanStep } from '../../types';
+import { Clip, PlanStep, AgentContext } from '../../types';
 import { getAiClient } from '../gemini';
 import { TIMELINE_PRIMITIVES } from '../timelinePrimitives';
 import { VideoAnalysis } from './eyes';
@@ -21,16 +21,20 @@ export interface BrainOutput {
 }
 
 export class BrainAgent {
-  async plan(userIntent: string, analysis: VideoAnalysis, clips: Clip[]): Promise<BrainOutput> {
+  async plan(userIntent: string, analysis: VideoAnalysis, context: AgentContext): Promise<BrainOutput> {
     const ai = getAiClient();
+    const { clips, selectedClipIds, currentTime } = context;
     
+    // Create a rich context string for the LLM
     const timelineContext = clips.map(c => ({
         id: c.id,
+        title: c.title,
         type: c.type,
         start: c.startTime.toFixed(2),
         duration: c.duration.toFixed(2),
         track: c.trackId,
-        title: c.title
+        text: c.text ? c.text.slice(0, 30) : undefined,
+        isSelected: selectedClipIds.includes(c.id)
     }));
 
     const prompt = `
@@ -39,7 +43,11 @@ export class BrainAgent {
     
     USER INTENT: "${userIntent}"
     EYES ANALYSIS: ${JSON.stringify(analysis)}
-    CURRENT TIMELINE: ${JSON.stringify(timelineContext)}
+    
+    TIMELINE STATE:
+    - Playhead Position: ${currentTime.toFixed(2)}s
+    - Selected Clips: ${selectedClipIds.length > 0 ? selectedClipIds.join(', ') : 'None'}
+    - Clips: ${JSON.stringify(timelineContext)}
     
     AVAILABLE TOOLS:
     - move_clip, ripple_delete, split_clip, update_clip_property
@@ -52,11 +60,14 @@ export class BrainAgent {
 
     INSTRUCTIONS:
     1. **PRIORITIZE GENERATION**: If the user asks to "create", "generate", or "make" something (like an intro) and you don't have the files, DO NOT ask them to upload. Use 'generate_video_asset' or 'generate_image_asset'.
-    2. **MODEL SELECTION**: 
+    2. **STYLE MATCHING (CRITICAL)**: When calling 'generate_video_asset' or 'generate_image_asset', DO NOT just pass the user's raw intent. You MUST rewrite the prompt to include the visual style, lighting, and tone found in the 'EYES ANALYSIS'.
+       - BAD: "A cat playing football"
+       - GOOD: "A cinematic shot of a cat playing football, neon lighting, cyberpunk aesthetic, high contrast, 4k, matching the existing video style."
+    3. **MODEL SELECTION**: 
        - For 'generate_video_asset': Use 'veo-3.1-fast-generate-preview' for quick drafts or simple concepts. Use 'veo-3.1-generate-preview' for high-quality, complex, or cinematic requests.
        - For 'generate_image_asset': Use 'gemini-2.5-flash-image' by default. Use 'gemini-3-pro-image-preview' for detailed art or text rendering.
-    3. **CONTEXTUAL PROMPTING**: Write highly detailed visual prompts based on the 'analysis'.
     4. **AUTONOMY**: Be decisive.
+    5. **REFERENCING**: Use specific Clip IDs from the TIMELINE STATE in your plan operations.
     
     OUTPUT JSON SCHEMA:
     {
@@ -88,12 +99,36 @@ export class BrainAgent {
         });
 
         const text = response.text || "{}";
-        return JSON.parse(text);
+        let parsed: any = {};
+        
+        try {
+            parsed = JSON.parse(text);
+        } catch (e) {
+            console.warn("Failed to parse Brain JSON directly, attempting fallback cleanup", e);
+            // Try to salvage if it's wrapped in markdown
+            const match = text.match(/```json\n([\s\S]*?)\n```/);
+            if (match) {
+                try { parsed = JSON.parse(match[1]); } catch {}
+            }
+        }
+
+        // Validate and Default
+        const finalPlan = {
+            thought: parsed.thought || "I have formulated a plan.",
+            plan: {
+                goal: parsed.plan?.goal || "Edit Timeline",
+                reasoning: parsed.plan?.reasoning || "Executing based on user request.",
+                steps: Array.isArray(parsed.plan?.steps) ? parsed.plan.steps : []
+            }
+        };
+
+        return finalPlan;
+
     } catch (e) {
         console.error("Brain Agent Error", e);
         return {
-            thought: "My planning process was interrupted.",
-            plan: { goal: "Error", reasoning: "Failed to generate plan", steps: [] }
+            thought: "My planning process was interrupted by an error.",
+            plan: { goal: "Error Recovery", reasoning: "Failed to generate plan structure.", steps: [] }
         };
     }
   }

@@ -151,12 +151,17 @@ export const extractAudioFromVideo = async (file: File | Blob): Promise<string> 
                 const wavBlob = bufferToWav(audioBuffer);
                 
                 const reader2 = new FileReader();
-                reader2.onloadend = () => {
+                reader2.onload = () => {
                     const base64data = reader2.result as string;
-                    // Remove data URL header
-                    const content = base64data.split(',')[1];
-                    resolve(content);
+                    if (base64data && base64data.includes(',')) {
+                        // Remove data URL header
+                        const content = base64data.split(',')[1];
+                        resolve(content);
+                    } else {
+                        reject(new Error("Failed to read encoded WAV blob."));
+                    }
                 };
+                reader2.onerror = () => reject(new Error("File Reader failed on WAV encoding"));
                 reader2.readAsDataURL(wavBlob);
 
             } catch (err) {
@@ -209,10 +214,15 @@ export const sliceAudioBlob = async (sourceUrl: string, start: number, duration:
         
         return new Promise((resolve) => {
             const reader = new FileReader();
-            reader.onloadend = () => {
+            reader.onload = () => {
                 const base64 = reader.result as string;
-                resolve(base64.split(',')[1]);
+                if (base64 && base64.includes(',')) {
+                    resolve(base64.split(',')[1]);
+                } else {
+                    resolve(null);
+                }
             };
+            reader.onerror = () => resolve(null);
             reader.readAsDataURL(wavBlob);
         });
     } catch (e) {

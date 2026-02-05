@@ -31,15 +31,22 @@ export interface Clip {
   volume?: number; // Audio volume 0-1 (default 1)
 }
 
+export interface AgentContext {
+  clips: Clip[];
+  selectedClipIds: string[];
+  currentTime: number;
+  range: { start: number, end: number };
+}
+
 export interface PlanStep {
   id: string;
   intent: string;              // Free-form, human-readable
   category?: 'visual' | 'audio' | 'pacing' | 'style';
   reasoning: string;
-  timestamp?: number;
-  status: 'pending' | 'approved' | 'rejected';
+  status: 'pending' | 'approved' | 'generating' | 'completed' | 'failed'; // Expanded status
   operation?: string;
   parameters?: any;
+  timestamp?: number;
 }
 
 export interface EditPlan {
@@ -66,7 +73,7 @@ export interface TimelineOperation {
 
 // Contract for Gemini Tool Calls ("suggest_ai_action")
 export interface ToolAction {
-  tool_id: "GENERATE_TRANSITION" | "GENERATE_VOICEOVER" | "SMART_TRIM" | "EDIT_TIMELINE";
+  tool_id: string; // Allow primitive names (e.g. 'generate_video_asset') or semantic IDs
   button_label: string;
   reasoning: string;
   timestamp?: number;

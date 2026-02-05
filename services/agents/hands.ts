@@ -14,6 +14,15 @@ export interface HandsOutput {
 }
 
 export class HandsAgent {
+  
+  // Helper to find a safe track index (top of stack)
+  private getSafeTrackId(): number {
+      const clips = timelineStore.getClips();
+      if (clips.length === 0) return 1;
+      const maxTrack = Math.max(...clips.map(c => c.trackId));
+      return maxTrack + 1;
+  }
+
   async execute(step: { operation: string, parameters: any, intent: string }): Promise<HandsOutput> {
     const { operation, parameters, intent } = step;
     const changes: string[] = [];
@@ -24,6 +33,13 @@ export class HandsAgent {
 
       // INTERCEPTION LOGIC FOR GENERATION TOOLS
       if (['generate_video_asset', 'generate_image_asset', 'generate_voiceover'].includes(operation)) {
+          // Intelligent Track Assignment Override
+          // If the brain didn't specify a track, or specified a potentially occluded one (0 or 1), 
+          // let's suggest a safe top track.
+          if (!parameters.trackId || parameters.trackId < 2) {
+              parameters.trackId = this.getSafeTrackId();
+          }
+
           return {
               thought: `Preparing to generate content (${operation}). Pausing for user approval on parameters.`,
               success: true,
@@ -100,7 +116,7 @@ export class HandsAgent {
               startTime: Number(parameters.startTime),
               duration: Number(parameters.duration),
               sourceStartTime: 0,
-              trackId: 3, 
+              trackId: this.getSafeTrackId(), // Always place text on top
               textStyle: textStyle as any,
               transform: { x: 0, y: isTitle ? 0 : 0.35, scale: 1, rotation: 0 } 
           };

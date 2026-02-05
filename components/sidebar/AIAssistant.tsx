@@ -1,26 +1,25 @@
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Loader2, Play, Eye, Brain, Hand, ShieldCheck, Terminal } from 'lucide-react';
-import { Clip, ChatMessage, ToolAction } from '../../types';
+import { Send, Loader2, Play, Eye, Brain, Hand, ShieldCheck, Terminal, AlertTriangle } from 'lucide-react';
+import { Clip, ChatMessage, ToolAction, EditPlan } from '../../types';
 import { ChatSuggestionCard } from './ChatSuggestionCard';
-import { AgenticLoop } from '../../services/agents/loopRunner';
-import { EyesAgent } from '../../services/agents/eyes';
-import { BrainAgent } from '../../services/agents/brain';
-import { HandsAgent } from '../../services/agents/hands';
-import { VerifierAgent } from '../../services/agents/verifier';
+import { PlanWidget } from './PlanWidget';
 
 interface AIAssistantProps {
   selectedClip: Clip | null;
+  selectedClipIds: string[];
   onRequestRangeSelect: () => void;
   isSelectingRange: boolean;
   timelineRange: { start: number, end: number } | null;
+  currentTime: number;
   allClips: Clip[];
   mediaRefs: React.MutableRefObject<{[key: string]: HTMLVideoElement | HTMLAudioElement | null}>;
   onExecuteAction: (action: ToolAction) => Promise<void>;
-  // Loop runner triggers
   onRunAgentLoop: (message: string) => Promise<void>;
   chatHistory: ChatMessage[];
   isProcessing: boolean;
+  activePlan: EditPlan | null; // Added
+  currentStepIndex: number;    // Added
 }
 
 export const AIAssistant: React.FC<AIAssistantProps> = ({ 
@@ -29,7 +28,12 @@ export const AIAssistant: React.FC<AIAssistantProps> = ({
     onExecuteAction,
     onRunAgentLoop,
     chatHistory,
-    isProcessing
+    isProcessing,
+    selectedClipIds,
+    timelineRange,
+    currentTime,
+    activePlan,
+    currentStepIndex
 }) => {
   const [assistQuery, setAssistQuery] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
@@ -39,7 +43,7 @@ export const AIAssistant: React.FC<AIAssistantProps> = ({
     if (scrollRef.current) {
         scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [chatHistory]);
+  }, [chatHistory, activePlan]); 
 
   const handleSendMessage = async () => {
       if (!assistQuery.trim() || isProcessing) return;
@@ -81,6 +85,32 @@ export const AIAssistant: React.FC<AIAssistantProps> = ({
       }
   };
 
+  const renderMessageContent = (text: string, agentType?: string) => {
+      const lines = text.split('\n');
+      
+      // Special rendering for Verification Issues
+      if (text.startsWith('⚠️ Verification Issues Found')) {
+          return (
+              <div className="bg-yellow-950/30 border border-yellow-500/30 rounded-lg p-2 mt-1">
+                  <div className="flex items-center gap-2 mb-2 text-yellow-400 font-bold text-[10px] uppercase tracking-wider">
+                      <AlertTriangle size={12} /> Verification Alert
+                  </div>
+                  <ul className="space-y-1">
+                      {lines.slice(1).map((line, idx) => (
+                          <li key={idx} className="text-xs text-yellow-200/90 pl-1">{line}</li>
+                      ))}
+                  </ul>
+              </div>
+          );
+      }
+
+      return (
+          <div className={`rounded-xl px-3 py-2 text-xs border whitespace-pre-wrap leading-relaxed ${getAgentColor(agentType)}`}>
+              {text}
+          </div>
+      );
+  };
+
   return (
     <div className="flex flex-col h-full bg-neutral-900 border-l border-neutral-800 text-neutral-200 font-sans relative z-50">
       <div className="p-3 border-b border-neutral-800 bg-neutral-900 shadow-sm">
@@ -89,8 +119,12 @@ export const AIAssistant: React.FC<AIAssistantProps> = ({
           </h2>
       </div>
 
+      {activePlan && (
+          <PlanWidget plan={activePlan} currentStepIndex={currentStepIndex} />
+      )}
+
       <div className="flex-1 overflow-y-auto p-4 custom-scrollbar space-y-4" ref={scrollRef}>
-          {chatHistory.length === 0 && (
+          {chatHistory.length === 0 && !activePlan && (
               <div className="text-center mt-10 opacity-50 space-y-2">
                   <Brain size={32} className="mx-auto text-neutral-600" />
                   <p className="text-xs text-neutral-400">Ready to edit.</p>
@@ -98,7 +132,6 @@ export const AIAssistant: React.FC<AIAssistantProps> = ({
           )}
           
           {chatHistory.map((msg, i) => {
-             const isAgent = msg.role === 'agent' || msg.role === 'system';
              const isUser = msg.role === 'user';
              
              if (isUser) {
@@ -117,16 +150,16 @@ export const AIAssistant: React.FC<AIAssistantProps> = ({
                      <div className={`mt-0.5 shrink-0 w-6 h-6 rounded-full flex items-center justify-center border bg-neutral-800 border-neutral-700`}>
                          {getAgentIcon(msg.agentType)}
                      </div>
-                     <div className="flex-1 space-y-1">
+                     <div className="flex-1 space-y-1 min-w-0">
                          <div className="flex items-center gap-2">
                              <span className={`text-[10px] font-bold uppercase tracking-wider ${msg.agentType === 'system' ? 'text-neutral-500' : 'text-neutral-300'}`}>
                                  {getAgentLabel(msg.agentType)}
                              </span>
                              {msg.agentType === 'verifier' && <span className="text-[10px] text-yellow-500/50">Checking safety...</span>}
                          </div>
-                         <div className={`rounded-xl px-3 py-2 text-xs border ${getAgentColor(msg.agentType)}`}>
-                             {msg.text}
-                         </div>
+                         
+                         {renderMessageContent(msg.text, msg.agentType)}
+
                          {msg.toolAction && (
                             <div className="mt-2">
                                 <ChatSuggestionCard action={msg.toolAction} onApply={onExecuteAction} />

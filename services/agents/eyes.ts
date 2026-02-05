@@ -1,5 +1,5 @@
 
-import { Clip } from '../../types';
+import { AgentContext } from '../../types';
 import { getAiClient } from '../gemini';
 import { rangeToGeminiParts, storyboardToGeminiParts } from '../geminiAdapter';
 import { Type } from '@google/genai';
@@ -13,14 +13,15 @@ export interface VideoAnalysis {
 }
 
 export class EyesAgent {
-  async analyze(clips: Clip[], mediaRefs: any): Promise<VideoAnalysis> {
+  async analyze(context: AgentContext, mediaRefs: any): Promise<VideoAnalysis> {
     const ai = getAiClient();
+    const { clips, range } = context;
     
     // DECISION LOGIC: 
-    // If the timeline is messy (overlapping clips at 0) or contains many clips, 
-    // we should do a "Survey" to help the Brain arrange them.
-    // For this demo, we'll do a survey if we see > 2 clips.
-    const isSurveyMode = clips.length > 2;
+    // If we have a specific range selection (end > start), we analyze that.
+    // If not, we fall back to "Survey Mode" if there are many clips, or full playback if few.
+    const hasSelection = range.end > range.start && (range.end - range.start) > 0.1;
+    const isSurveyMode = !hasSelection && clips.length > 3;
 
     let mediaParts: any[] = [];
     let instructions = "";
@@ -37,11 +38,16 @@ export class EyesAgent {
         - "editingNeeds": Suggest an order. E.g. "Move the Intro clip to start", "Place Interview after Intro".
         `;
     } else {
+        // Use the context range or default to entire timeline
         const duration = clips.reduce((max, c) => Math.max(max, c.startTime + c.duration), 0);
-        const analysisRange = { start: 0, end: Math.min(duration, 30), tracks: [] as any };
+        const analysisRange = hasSelection ? 
+            { start: range.start, end: range.end, tracks: [] as any } : 
+            { start: 0, end: Math.min(duration, 45), tracks: [] as any };
+
         mediaParts = await rangeToGeminiParts(analysisRange, clips, mediaRefs);
         instructions = `
         MODE: TIMELINE PLAYBACK.
+        RANGE: ${analysisRange.start.toFixed(1)}s to ${analysisRange.end.toFixed(1)}s.
         TASK: Watch the composed video. Analyze Pacing, Visual Quality, and Audio.
         `;
     }

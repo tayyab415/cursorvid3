@@ -3,7 +3,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Timeline } from './components/Timeline';
 import { CanvasControls } from './components/CanvasControls';
 import { AIAssistant } from './components/sidebar/AIAssistant';
-import { Clip, ChatMessage, ToolAction } from './types';
+import { Clip, ChatMessage, ToolAction, EditPlan } from './types';
 import { generateImage, generateVideo, generateSpeech, determinePlacement } from './services/gemini';
 import { captureFrameFromVideoUrl, extractAudioFromVideo } from './utils/videoUtils';
 import { 
@@ -11,7 +11,7 @@ import {
   Sparkles, Scissors, Gauge, Download, Volume2, VolumeX, X, 
   Image as ImageIcon, Film, Mic, Camera, Trash2, Info, Captions, 
   Type, Bold, Italic, Underline, AlignCenter, AlignLeft, AlignRight, 
-  Check, ChevronLeft, Bot
+  Check, ChevronLeft, Bot, Palette
 } from 'lucide-react';
 import { timelineStore } from './timeline/store';
 
@@ -365,7 +365,7 @@ const GeminiLogo = ({ className = "w-6 h-6" }: { className?: string }) => (
     </svg>
 );
 
-// --- NEW COMPONENT: GENERATION APPROVAL MODAL ---
+// --- UPDATED: CONSISTENT GENERATION APPROVAL MODAL ---
 const GenerationApprovalModal = ({ 
     isOpen, 
     onClose, 
@@ -380,7 +380,6 @@ const GenerationApprovalModal = ({
     if (!isOpen || !request) return null;
 
     const [params, setParams] = useState(request.params);
-    const [isThinking, setIsThinking] = useState(false);
 
     useEffect(() => {
         setParams(request.params);
@@ -394,105 +393,130 @@ const GenerationApprovalModal = ({
     const isImage = request.tool === 'generate_image_asset';
     const isAudio = request.tool === 'generate_voiceover';
 
+    const getIcon = () => {
+        if (isVideo) return <Film className="w-5 h-5 text-purple-400" />;
+        if (isImage) return <ImageIcon className="w-5 h-5 text-yellow-400" />;
+        if (isAudio) return <Mic className="w-5 h-5 text-blue-400" />;
+        return <Sparkles className="w-5 h-5 text-purple-400" />;
+    };
+
+    const getTitle = () => {
+        if (isVideo) return "Generate Video Asset";
+        if (isImage) return "Generate Image Asset";
+        if (isAudio) return "Generate Voiceover";
+        return "Generate Asset";
+    };
+
     return (
         <div className="fixed inset-0 z-[800] flex items-center justify-center p-4">
             <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={onClose} />
-            <div className="relative w-full max-w-lg bg-neutral-900 border border-neutral-700 rounded-2xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
-                <div className="p-4 border-b border-neutral-800 bg-neutral-950 flex items-center gap-3">
-                    <Bot className="w-5 h-5 text-purple-400" />
-                    <div>
-                        <h3 className="text-sm font-bold text-white">Generation Approval</h3>
-                        <p className="text-[10px] text-neutral-400 uppercase tracking-wider">AI Suggested Parameters</p>
+            <div className="relative w-full max-w-2xl bg-neutral-900 border border-neutral-800 rounded-2xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]">
+                <div className="p-4 border-b border-neutral-800 flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                        <div className="p-2 rounded-lg bg-neutral-800 border border-neutral-700">
+                            {getIcon()}
+                        </div>
+                        <div>
+                            <h3 className="text-sm font-bold text-white">{getTitle()}</h3>
+                            <p className="text-[10px] text-neutral-400 uppercase tracking-wider">AI Execution Approval</p>
+                        </div>
                     </div>
+                    <button onClick={onClose} className="p-2 hover:bg-neutral-800 rounded-full text-neutral-400 hover:text-white transition-colors">
+                        <X className="w-5 h-5" />
+                    </button>
                 </div>
                 
-                <div className="p-6 space-y-4">
-                    {/* Model Suggestion Banner */}
-                    {params.model && (
-                        <div className="bg-purple-900/20 border border-purple-500/30 rounded-lg p-3 flex items-start gap-3">
-                            <Sparkles className="w-4 h-4 text-purple-400 mt-0.5 shrink-0" />
-                            <div>
-                                <p className="text-xs font-bold text-purple-200">AI Model Selection</p>
-                                <p className="text-xs text-purple-300/80 mt-0.5">
-                                    Suggested <strong>{params.model}</strong> based on task complexity.
-                                </p>
-                            </div>
+                <div className="flex-1 p-6 overflow-y-auto bg-neutral-950/50">
+                    <div className="max-w-xl mx-auto space-y-6">
+                        {/* Common: Prompt / Text */}
+                        <div>
+                            <label className="block text-sm font-medium text-neutral-400 mb-2">
+                                {isAudio ? 'Script' : 'Prompt'}
+                            </label>
+                            <textarea 
+                                value={isAudio ? params.text : params.prompt} 
+                                onChange={(e) => handleChange(isAudio ? 'text' : 'prompt', e.target.value)}
+                                className="w-full h-24 bg-neutral-900 border border-neutral-700 rounded-xl p-3 text-sm focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 resize-none transition-all text-neutral-200"
+                            />
                         </div>
-                    )}
 
-                    {/* Common: Prompt / Text */}
-                    <div className="space-y-1.5">
-                        <label className="text-xs font-semibold text-neutral-400">
-                            {isAudio ? 'Script' : 'Prompt'}
-                        </label>
-                        <textarea 
-                            value={isAudio ? params.text : params.prompt} 
-                            onChange={(e) => handleChange(isAudio ? 'text' : 'prompt', e.target.value)}
-                            className="w-full h-24 bg-neutral-950 border border-neutral-800 rounded-lg p-3 text-xs text-neutral-200 focus:border-purple-500 outline-none resize-none"
-                        />
-                    </div>
-
-                    {/* Type Specific Controls */}
-                    <div className="grid grid-cols-2 gap-4">
-                        {isVideo && (
-                            <>
+                        {/* Model Suggestion Banner */}
+                        {params.model && (
+                            <div className="bg-purple-900/10 border border-purple-500/20 rounded-lg p-3 flex items-start gap-3">
+                                <Sparkles className="w-4 h-4 text-purple-400 mt-0.5 shrink-0" />
                                 <div>
-                                    <label className="text-[10px] font-semibold text-neutral-500 block mb-1">Model</label>
+                                    <p className="text-xs font-bold text-purple-200">AI Model Suggestion</p>
+                                    <p className="text-xs text-purple-300/80 mt-0.5 leading-relaxed">
+                                        The planner selected <strong>{params.model}</strong> based on your intent. You can change this below.
+                                    </p>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Type Specific Controls Grid */}
+                        <div className="grid grid-cols-2 gap-6 pt-2 border-t border-neutral-800">
+                            {isVideo && (
+                                <>
+                                    <div>
+                                        <label className="block text-xs font-medium text-neutral-500 mb-1">Model</label>
+                                        <select 
+                                            value={params.model || 'veo-3.1-fast-generate-preview'} 
+                                            onChange={(e) => handleChange('model', e.target.value)}
+                                            className="w-full bg-neutral-900 border border-neutral-700 rounded-lg p-2 text-sm focus:outline-none focus:border-purple-500 text-white"
+                                        >
+                                            <option value="veo-3.1-fast-generate-preview">Veo 3.1 Fast</option>
+                                            <option value="veo-3.1-generate-preview">Veo 3.1 Quality</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-medium text-neutral-500 mb-1">Duration</label>
+                                        <select 
+                                            value={params.duration || 4} 
+                                            onChange={(e) => handleChange('duration', Number(e.target.value))}
+                                            className="w-full bg-neutral-900 border border-neutral-700 rounded-lg p-2 text-sm focus:outline-none focus:border-purple-500 text-white"
+                                        >
+                                            <option value={4}>4 Seconds</option>
+                                            <option value={8}>8 Seconds</option>
+                                        </select>
+                                    </div>
+                                </>
+                            )}
+                            {isImage && (
+                                <div>
+                                    <label className="block text-xs font-medium text-neutral-500 mb-1">Model</label>
                                     <select 
-                                        value={params.model || 'veo-3.1-fast-generate-preview'} 
+                                        value={params.model || 'gemini-2.5-flash-image'} 
                                         onChange={(e) => handleChange('model', e.target.value)}
-                                        className="w-full bg-neutral-950 border border-neutral-800 rounded p-2 text-xs text-white"
+                                        className="w-full bg-neutral-900 border border-neutral-700 rounded-lg p-2 text-sm focus:outline-none focus:border-purple-500 text-white"
                                     >
-                                        <option value="veo-3.1-fast-generate-preview">Veo 3.1 Fast</option>
-                                        <option value="veo-3.1-generate-preview">Veo 3.1 Quality</option>
+                                        <option value="gemini-2.5-flash-image">Gemini 2.5 Flash</option>
+                                        <option value="gemini-3-pro-image-preview">Gemini 3 Pro</option>
                                     </select>
                                 </div>
+                            )}
+                            {isAudio && (
                                 <div>
-                                    <label className="text-[10px] font-semibold text-neutral-500 block mb-1">Duration</label>
-                                    <select 
-                                        value={params.duration || 4} 
-                                        onChange={(e) => handleChange('duration', Number(e.target.value))}
-                                        className="w-full bg-neutral-950 border border-neutral-800 rounded p-2 text-xs text-white"
-                                    >
-                                        <option value={4}>4 Seconds</option>
-                                        <option value={8}>8 Seconds</option>
-                                    </select>
+                                    <label className="block text-xs font-medium text-neutral-500 mb-1">Voice</label>
+                                    <div className="grid grid-cols-3 gap-2">
+                                        {['Kore', 'Puck', 'Charon', 'Fenrir', 'Zephyr'].map(voice => (
+                                            <button 
+                                                key={voice} 
+                                                onClick={() => handleChange('voice', voice)} 
+                                                className={`p-2 rounded border text-xs font-medium transition-all ${params.voice === voice ? 'bg-purple-600 border-purple-500 text-white' : 'bg-neutral-900 border-neutral-700 text-neutral-400 hover:border-neutral-600'}`}
+                                            >
+                                                {voice}
+                                            </button>
+                                        ))}
+                                    </div>
                                 </div>
-                            </>
-                        )}
-                        {isImage && (
-                            <div>
-                                <label className="text-[10px] font-semibold text-neutral-500 block mb-1">Model</label>
-                                <select 
-                                    value={params.model || 'gemini-2.5-flash-image'} 
-                                    onChange={(e) => handleChange('model', e.target.value)}
-                                    className="w-full bg-neutral-950 border border-neutral-800 rounded p-2 text-xs text-white"
-                                >
-                                    <option value="gemini-2.5-flash-image">Gemini 2.5 Flash</option>
-                                    <option value="gemini-3-pro-image-preview">Gemini 3 Pro</option>
-                                </select>
-                            </div>
-                        )}
-                        {isAudio && (
-                            <div>
-                                <label className="text-[10px] font-semibold text-neutral-500 block mb-1">Voice</label>
-                                <select 
-                                    value={params.voice || 'Kore'} 
-                                    onChange={(e) => handleChange('voice', e.target.value)}
-                                    className="w-full bg-neutral-950 border border-neutral-800 rounded p-2 text-xs text-white"
-                                >
-                                    {['Kore', 'Puck', 'Charon', 'Fenrir', 'Zephyr'].map(v => (
-                                        <option key={v} value={v}>{v}</option>
-                                    ))}
-                                </select>
-                            </div>
-                        )}
+                            )}
+                        </div>
                     </div>
                 </div>
 
                 <div className="p-4 border-t border-neutral-800 bg-neutral-950 flex justify-end gap-3">
                     <button onClick={onClose} className="px-4 py-2 text-xs font-bold text-neutral-400 hover:text-white transition-colors">Cancel</button>
-                    <button onClick={() => onConfirm(params)} className="px-6 py-2 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-500 hover:to-blue-500 text-white text-xs font-bold rounded-lg shadow-lg flex items-center gap-2 transition-transform active:scale-95">
+                    <button onClick={() => onConfirm(params)} className="flex items-center gap-2 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 text-white px-6 py-2 rounded-lg font-medium text-sm transition-all shadow-lg shadow-purple-900/20">
                         <Sparkles size={14} className="text-yellow-200" /> Confirm & Generate
                     </button>
                 </div>
@@ -558,11 +582,13 @@ export default function App() {
   const [uploadTarget, setUploadTarget] = useState<'start'|'end'>('start');
   const [audioVoice, setAudioVoice] = useState('Kore');
   
-  // CHAT STATE
+  // CHAT & AGENT STATE
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   
-  // --- NEW: Approval State ---
+  // EXECUTION QUEUE STATE (For Multi-step plans)
+  const [activePlan, setActivePlan] = useState<EditPlan | null>(null);
+  const [currentStepIndex, setCurrentStepIndex] = useState(0);
   const [pendingApproval, setPendingApproval] = useState<{ tool: string, params: any } | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null); 
@@ -604,27 +630,94 @@ export default function App() {
             text: thought,
             toolAction: toolAction // Pass action to UI
         }]);
-    },
-    // onApprovalRequest Callback
-    (request) => {
-        setPendingApproval(request);
     }
   );
+
+  // --- LOOP LOGIC ---
+
+  const executePlanStep = async (stepIndex: number, plan: EditPlan, initialIntent: string) => {
+      if (!plan || stepIndex >= plan.steps.length) {
+          // Finished all steps? Verify!
+          if (plan) {
+              await loop.verify(initialIntent, [], timelineStore.getClips());
+              setActivePlan(null); // Clear plan after verification
+          }
+          setIsProcessing(false);
+          return;
+      }
+
+      const step = plan.steps[stepIndex];
+      setCurrentStepIndex(stepIndex);
+      
+      // Update step status to generating
+      setActivePlan(prev => {
+          if (!prev) return null;
+          const newSteps = [...prev.steps];
+          newSteps[stepIndex] = { ...newSteps[stepIndex], status: 'generating' };
+          return { ...prev, steps: newSteps };
+      });
+
+      try {
+          const result = await loop.executeStep(step);
+          
+          if (result.approvalRequired) {
+              setPendingApproval(result.approvalRequired);
+              // Do NOT increment step index yet. Wait for approval modal.
+              return;
+          }
+
+          if (result.success) {
+              // Mark completed
+              setActivePlan(prev => {
+                  if (!prev) return null;
+                  const newSteps = [...prev.steps];
+                  newSteps[stepIndex] = { ...newSteps[stepIndex], status: 'completed' };
+                  return { ...prev, steps: newSteps };
+              });
+              
+              // Recurse to next step
+              await executePlanStep(stepIndex + 1, plan, initialIntent);
+          }
+      } catch (e) {
+          console.error("Step execution failed", e);
+          setIsProcessing(false);
+      }
+  };
 
   const handleRunAgentLoop = async (message: string) => {
     setIsProcessing(true);
     setChatHistory(prev => [...prev, { role: 'user', text: message }]);
+    setActivePlan(null); // Reset old plans
+    setCurrentStepIndex(0);
+
     try {
-        await loop.run(message, timelineStore.getClips(), mediaRefs.current);
+        const context = {
+            clips: timelineStore.getClips(),
+            selectedClipIds,
+            currentTime,
+            range: liveScopeRange || { start: 0, end: 0 }
+        };
+        
+        // Phase 1: Plan
+        const plan = await loop.plan(message, context, mediaRefs.current);
+        
+        if (plan) {
+            setActivePlan(plan);
+            // Start Execution from Step 0
+            await executePlanStep(0, plan, message);
+        } else {
+            setIsProcessing(false);
+        }
+
     } catch (e) {
         setChatHistory(prev => [...prev, { role: 'system', text: "Agent loop failed unexpectedly." }]);
-    } finally {
+        console.error(e);
         setIsProcessing(false);
-    }
+    } 
   };
 
   const handleExecuteAIAction = async (action: ToolAction) => {
-      if (action.tool_id === 'USER_ACTION_REQUEST' as any) {
+      if (action.tool_id === 'USER_ACTION_REQUEST') {
           if (action.button_label.includes("Upload")) {
               triggerLocalUpload();
           }
@@ -641,15 +734,20 @@ export default function App() {
   };
 
   const handleApprovalConfirm = async (params: any) => {
-      if (!pendingApproval) return;
-      setPendingApproval(null);
-      setIsGenerating(true);
+      if (!pendingApproval || !activePlan) return;
       
       const { tool } = pendingApproval;
+      setPendingApproval(null);
+      setIsGenerating(true); // UI Spinner
+      
+      // Update Chat UI
+      setChatHistory(prev => [...prev, { 
+          role: 'system', 
+          text: `🚀 Starting generation for step ${currentStepIndex + 1}/${activePlan.steps.length}...` 
+      }]);
       
       try {
-          // Execute based on tool type using the NEW params from modal
-          // We can reuse the same logic as HandsAgent or call functions directly
+          // Manual Execution Logic reused from Handlers
           if (tool === 'generate_video_asset') {
               const videoUrl = await generateVideo(
                   params.prompt, 
@@ -710,15 +808,29 @@ export default function App() {
               });
           }
           
-          setChatHistory(prev => [...prev, { role: 'system', text: "✅ Content generated and added to timeline." }]);
+          setChatHistory(prev => [...prev, { role: 'system', text: "✅ Asset generated successfully." }]);
+
+          // Update Plan Status locally
+          setActivePlan(prev => {
+              if (!prev) return null;
+              const newSteps = [...prev.steps];
+              newSteps[currentStepIndex] = { ...newSteps[currentStepIndex], status: 'completed' };
+              return { ...prev, steps: newSteps };
+          });
+
+          // RESUME EXECUTION LOOP
+          await executePlanStep(currentStepIndex + 1, activePlan, activePlan.goal);
 
       } catch (e: any) {
           console.error("Generation Error:", e);
           setChatHistory(prev => [...prev, { role: 'system', text: `❌ Generation failed: ${e.message}` }]);
+          setIsProcessing(false);
       } finally {
           setIsGenerating(false);
       }
   };
+  
+  // ... (Rest of App.tsx logic remains mostly the same, standard handlers) ...
   
   // ... (Playback Logic Same as before) ...
   useEffect(() => {
@@ -839,8 +951,9 @@ export default function App() {
   };
   
   const handleSplitClip = () => {
-      // Placeholder for split implementation in store context
-      // For now no-op or simple
+      if (primarySelectedClip) {
+          timelineStore.splitClip(primarySelectedClip.id, currentTime);
+      }
   };
 
   // Add media handlers (same logic, just using store.addClip)
@@ -1061,7 +1174,7 @@ export default function App() {
     <div className="flex flex-col h-screen bg-neutral-950 text-neutral-100 font-sans overflow-hidden">
       <GenerationApprovalModal 
           isOpen={!!pendingApproval} 
-          onClose={() => setPendingApproval(null)} 
+          onClose={() => { setPendingApproval(null); setIsProcessing(false); }} 
           onConfirm={handleApprovalConfirm} 
           request={pendingApproval} 
       />
@@ -1171,15 +1284,19 @@ export default function App() {
         <aside className="w-80 border-l border-neutral-800 bg-neutral-900 flex flex-col z-[150] relative">
           <AIAssistant 
             selectedClip={primarySelectedClip} 
+            selectedClipIds={selectedClipIds}
             onRequestRangeSelect={() => {}}
             isSelectingRange={isSelectingScope} 
             timelineRange={liveScopeRange}
+            currentTime={currentTime}
             allClips={clips}
             mediaRefs={mediaRefs}
             onExecuteAction={handleExecuteAIAction}
             onRunAgentLoop={handleRunAgentLoop}
             chatHistory={chatHistory}
             isProcessing={isProcessing}
+            activePlan={activePlan}
+            currentStepIndex={currentStepIndex}
           />
         </aside>
       </div>
