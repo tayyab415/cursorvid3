@@ -147,7 +147,18 @@ export const TIMELINE_PRIMITIVES: FunctionDeclaration[] = [
               text: { type: Type.STRING, description: 'The content of the text' },
               startTime: { type: Type.NUMBER, description: 'Start time in seconds' },
               duration: { type: Type.NUMBER, description: 'Duration in seconds' },
-              style: { type: Type.STRING, enum: ['subtitle', 'title', 'label'], description: 'Visual style preset' }
+              style: { type: Type.STRING, enum: ['subtitle', 'title', 'label'], description: 'Visual style preset' },
+              textStyle: { 
+                  type: Type.OBJECT, 
+                  description: 'Optional overrides for text style',
+                  properties: {
+                      fontSize: { type: Type.NUMBER },
+                      color: { type: Type.STRING },
+                      backgroundColor: { type: Type.STRING },
+                      isBold: { type: Type.BOOLEAN },
+                      fontFamily: { type: Type.STRING }
+                  }
+              }
           },
           required: ['text', 'startTime', 'duration']
       }

@@ -131,47 +131,50 @@ export const captureFrameFromVideoUrl = async (
     });
 };
 
+// Helper to convert Blob to Base64 string (no header)
+const blobToBase64 = (blob: Blob): Promise<string> => {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+            const base64data = reader.result as string;
+            if (base64data && base64data.includes(',')) {
+                resolve(base64data.split(',')[1]);
+            } else {
+                reject(new Error("Failed to read blob data"));
+            }
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+    });
+};
+
 /**
  * Extracts audio from a video file/blob and returns it as a base64 encoded string.
  * This is used to send lighter payloads to Gemini for transcription.
  */
 export const extractAudioFromVideo = async (file: File | Blob): Promise<string> => {
-    return new Promise((resolve, reject) => {
-        const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-        const reader = new FileReader();
-
-        reader.onload = async (e) => {
-            const arrayBuffer = e.target?.result as ArrayBuffer;
-            try {
-                // Decode the audio
-                const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-                
-                // We need to re-encode this to WAV or similar to send to Gemini
-                // Since AudioContext returns raw PCM, we'll create a simple WAV file in memory
-                const wavBlob = bufferToWav(audioBuffer);
-                
-                const reader2 = new FileReader();
-                reader2.onload = () => {
-                    const base64data = reader2.result as string;
-                    if (base64data && base64data.includes(',')) {
-                        // Remove data URL header
-                        const content = base64data.split(',')[1];
-                        resolve(content);
-                    } else {
-                        reject(new Error("Failed to read encoded WAV blob."));
-                    }
-                };
-                reader2.onerror = () => reject(new Error("File Reader failed on WAV encoding"));
-                reader2.readAsDataURL(wavBlob);
-
-            } catch (err) {
-                reject(err);
-            }
-        };
-
-        reader.onerror = reject;
-        reader.readAsArrayBuffer(file);
-    });
+    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioContextClass) {
+        throw new Error("AudioContext not supported");
+    }
+    const audioContext = new AudioContextClass();
+    
+    try {
+        const arrayBuffer = await file.arrayBuffer();
+        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+        
+        // Re-encode to WAV
+        const wavBlob = bufferToWav(audioBuffer);
+        return await blobToBase64(wavBlob);
+    } catch (err) {
+        // If decoding fails, it likely means no audio track or unsupported format.
+        console.warn("Audio extraction failed (likely silent video):", err);
+        throw new Error("Could not extract audio from video. The video might be silent.");
+    } finally {
+        if (audioContext.state !== 'closed') {
+            await audioContext.close();
+        }
+    }
 };
 
 /**
@@ -179,10 +182,16 @@ export const extractAudioFromVideo = async (file: File | Blob): Promise<string> 
  * This preserves the "Soul" of the video (audio rhythm) for Gemini.
  */
 export const sliceAudioBlob = async (sourceUrl: string, start: number, duration: number): Promise<string | null> => {
+    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioContextClass) return null;
+    
+    const audioContext = new AudioContextClass();
+
     try {
-        const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
         const response = await fetch(sourceUrl);
         const arrayBuffer = await response.arrayBuffer();
+        
+        // decodeAudioData will throw if the audio data is invalid or empty (e.g. video without audio track)
         const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
 
         // Calculate sample offsets
@@ -211,23 +220,16 @@ export const sliceAudioBlob = async (sourceUrl: string, start: number, duration:
         }
 
         const wavBlob = bufferToWav(slicedBuffer);
-        
-        return new Promise((resolve) => {
-            const reader = new FileReader();
-            reader.onload = () => {
-                const base64 = reader.result as string;
-                if (base64 && base64.includes(',')) {
-                    resolve(base64.split(',')[1]);
-                } else {
-                    resolve(null);
-                }
-            };
-            reader.onerror = () => resolve(null);
-            reader.readAsDataURL(wavBlob);
-        });
+        return await blobToBase64(wavBlob);
+
     } catch (e) {
-        console.error("Failed to slice audio:", e);
+        // This is common for videos generated by AI that are silent. We swallow the error to allow the pipeline to continue.
+        // console.debug("Slice audio skipped (silent or decode error):", e);
         return null;
+    } finally {
+        if (audioContext.state !== 'closed') {
+            await audioContext.close();
+        }
     }
 }
 

@@ -3,7 +3,7 @@ import { Clip, PlanStep, AgentContext } from '../../types';
 import { getAiClient } from '../gemini';
 import { TIMELINE_PRIMITIVES } from '../timelinePrimitives';
 import { VideoAnalysis } from './eyes';
-import { Type, FunctionCallingConfigMode } from '@google/genai';
+import { getToolDescriptions } from '../toolRegistry';
 
 export interface BrainOutput {
   thought: string;
@@ -44,6 +44,8 @@ export class BrainAgent {
 
     // Extract visual style for consistency
     const detectedStyle = analysis.visual?.styleDescription || "Cinematic, high quality, consistent with existing footage";
+    
+    const toolDescriptions = getToolDescriptions();
 
     const prompt = `
     ROLE: You are the BRAIN of a video editor.
@@ -63,13 +65,7 @@ export class BrainAgent {
     - Clips: ${JSON.stringify(timelineContext)}
     
     AVAILABLE TOOLS:
-    - move_clip, ripple_delete, split_clip, update_clip_property
-    - apply_visual_transform (zoom, pan)
-    - add_text_overlay
-    - generate_voiceover (TTS)
-    - generate_video_asset (Veo 3 - use for intros, b-roll, transitions)
-    - generate_image_asset (Imagen/Gemini - use for static backgrounds)
-    - request_user_assistance (ONLY use if generation is impossible or the user explicitly asks to upload their own specific file)
+    ${toolDescriptions}
 
     INSTRUCTIONS:
     1. **APPENDING CONTENT**: If adding an Outro or End Screen, use 'insertTime' = ${timelineDuration.toFixed(2)}. Do NOT put it at 0.

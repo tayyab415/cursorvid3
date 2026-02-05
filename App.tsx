@@ -5,6 +5,7 @@ import { CanvasControls } from './components/CanvasControls';
 import { AIAssistant } from './components/sidebar/AIAssistant';
 import { Clip, ChatMessage, ToolAction, EditPlan } from './types';
 import { generateImage, generateVideo, generateSpeech } from './services/gemini';
+import { executeTool } from './services/toolRegistry';
 import { extractAudioFromVideo } from './utils/videoUtils';
 import { 
   Video, Play, Pause, Loader2, Upload, RotateCcw, RotateCw, 
@@ -988,63 +989,13 @@ export default function App() {
       }]);
       
       try {
-          const currentClips = timelineStore.getClips();
-          const maxTrack = currentClips.length > 0 ? Math.max(...currentClips.map(c => c.trackId)) : 0;
-          let targetTrackId = Number(params.trackId);
-          if (isNaN(targetTrackId)) targetTrackId = maxTrack + 1;
-          const rawInsertTime = Number(params.insertTime);
-          const safeStartTime = isNaN(rawInsertTime) ? 0 : rawInsertTime;
-          const rawDuration = Number(params.duration);
-          const safeDuration = (isNaN(rawDuration) || rawDuration <= 0) ? 4 : rawDuration;
-
-          if (tool === 'generate_video_asset') {
-              const videoUrl = await generateVideo(params.prompt, params.model || 'veo-3.1-fast-generate-preview', '16:9', '720p', safeDuration);
-              timelineStore.addClip({
-                id: `gen-vid-${Date.now()}`,
-                title: `Veo: ${params.prompt.slice(0, 15)}...`,
-                type: 'video',
-                startTime: safeStartTime,
-                duration: safeDuration,
-                sourceStartTime: 0,
-                sourceUrl: videoUrl,
-                trackId: targetTrackId,
-                volume: 1,
-                speed: 1,
-                transform: { x: 0, y: 0, scale: 1, rotation: 0 }
-              });
-          } else if (tool === 'generate_image_asset') {
-              const base64Img = await generateImage(params.prompt, params.model || 'gemini-2.5-flash-image');
-              const imgUrl = `data:image/png;base64,${base64Img}`;
-              timelineStore.addClip({
-                id: `gen-img-${Date.now()}`,
-                title: `Img: ${params.prompt.slice(0, 15)}...`,
-                type: 'image',
-                startTime: safeStartTime,
-                duration: safeDuration || 5,
-                sourceStartTime: 0,
-                sourceUrl: imgUrl,
-                trackId: targetTrackId,
-                transform: { x: 0, y: 0, scale: 1, rotation: 0 }
-              });
-          } else if (tool === 'generate_voiceover') {
-              const audioUrl = await generateSpeech(params.text, params.voice || 'Kore');
-              const tempAudio = new Audio(audioUrl);
-              await new Promise<void>((resolve) => { tempAudio.onloadedmetadata = () => resolve(); tempAudio.onerror = () => resolve(); });
-              timelineStore.addClip({
-                id: `vo-${Date.now()}`,
-                title: `VO: ${params.text.slice(0, 15)}...`,
-                type: 'audio',
-                startTime: safeStartTime,
-                duration: tempAudio.duration || 5,
-                sourceStartTime: 0,
-                sourceUrl: audioUrl,
-                trackId: targetTrackId,
-                volume: 1,
-                speed: 1,
-                transform: { x: 0, y: 0, scale: 1, rotation: 0 }
-              });
-          }
+          // Use the Registry to execute the approved tool
+          const result = await executeTool(tool, params);
           
+          if (!result.success) {
+               throw new Error(result.error || "Unknown execution error");
+          }
+
           setChatHistory(prev => [...prev, { role: 'system', text: "✅ Asset generated successfully." }]);
           setActivePlan(prev => {
               if (!prev) return null;

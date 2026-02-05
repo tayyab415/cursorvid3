@@ -215,7 +215,7 @@ export const rangeToGeminiParts = async (
                 parts.push({ text: `(Audio from: ${dominantClip.title})` });
             }
         } catch (e) {
-            console.error("Audio slice failed", e);
+            // Silently ignore audio slice failures (common for silent/Veo videos)
         }
     }
 
