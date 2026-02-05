@@ -1,3 +1,4 @@
+
 import { GoogleGenAI, Type, FunctionDeclaration, Modality, FunctionCallingConfigMode } from "@google/genai";
 import { Clip, ToolAction, PlacementDecision, EditPlan, Suggestion, PlanStep, VideoIntent } from "../types";
 import { TIMELINE_PRIMITIVES } from "./timelinePrimitives";
@@ -272,13 +273,79 @@ export const analyzeVideoFrames = async (base64Frames: string[], prompt: string)
 };
 
 export const suggestEdits = async (currentClips: Clip[]): Promise<Suggestion[]> => { return []; };
+
+// --- GENERATION CAPABILITIES ---
+
 export const generateImage = async (prompt: string, model: string = 'gemini-2.5-flash-image', aspectRatio: string = '16:9'): Promise<string> => { 
-    return ""; // Placeholder as not used in primary flow currently
+    const ai = getAiClient();
+    try {
+        const response = await callWithRetry(() => ai.models.generateContent({
+            model: model,
+            contents: { parts: [{ text: prompt }] },
+            config: {
+                imageConfig: { aspectRatio: aspectRatio as any }
+            }
+        }));
+        
+        // Find image part
+        for (const part of response.candidates?.[0]?.content?.parts || []) {
+            if (part.inlineData && part.inlineData.mimeType.startsWith('image')) {
+                return part.inlineData.data;
+            }
+        }
+        throw new Error("No image generated");
+    } catch (e) {
+        console.error("Image Gen Error", e);
+        throw e;
+    }
 };
-export const generateVideo = async (p: string, m: string = 'veo-3.1-fast-generate-preview', a: string = '16:9', r: string = '720p', d: number = 8, s?: string | null, e?: string | null): Promise<string> => { 
-    // Video generation involves polling, custom retry logic typically needed for operations,
-    // but for start/wait pattern, standard retry on the initial call is useful.
-    return ""; 
+
+export const generateVideo = async (
+    prompt: string, 
+    model: string = 'veo-3.1-fast-generate-preview', 
+    aspectRatio: string = '16:9', 
+    resolution: string = '720p', 
+    duration: number = 8, 
+    startImage?: string | null, 
+    endImage?: string | null
+): Promise<string> => { 
+    const ai = getAiClient();
+    try {
+        const imagePart = startImage ? {
+            imageBytes: startImage.includes(',') ? startImage.split(',')[1] : startImage,
+            mimeType: 'image/png' // Assuming standard PNG/JPEG
+        } : undefined;
+
+        // Note: Veo SDK types might differ slightly in preview, adapting to standard call
+        let operation = await ai.models.generateVideos({
+            model: model,
+            prompt: prompt,
+            image: imagePart,
+            config: {
+                numberOfVideos: 1,
+                aspectRatio: aspectRatio as any,
+                resolution: resolution as any
+            }
+        });
+
+        // Poll for completion
+        while (!operation.done) {
+            await new Promise(resolve => setTimeout(resolve, 5000));
+            operation = await ai.operations.getVideosOperation({operation: operation});
+        }
+
+        const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
+        if (!downloadLink) throw new Error("No video URI returned");
+
+        // Fetch the actual bytes using the API key
+        const videoRes = await fetch(`${downloadLink}&key=${process.env.API_KEY}`);
+        const blob = await videoRes.blob();
+        return URL.createObjectURL(blob);
+
+    } catch (e) {
+        console.error("Video Gen Error", e);
+        throw e;
+    }
 };
 
 const base64ToUint8Array = (base64: string) => {

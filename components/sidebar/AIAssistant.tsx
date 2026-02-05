@@ -3,6 +3,11 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Send, Loader2, Play, Eye, Brain, Hand, ShieldCheck, Terminal } from 'lucide-react';
 import { Clip, ChatMessage, ToolAction } from '../../types';
 import { ChatSuggestionCard } from './ChatSuggestionCard';
+import { AgenticLoop } from '../../services/agents/loopRunner';
+import { EyesAgent } from '../../services/agents/eyes';
+import { BrainAgent } from '../../services/agents/brain';
+import { HandsAgent } from '../../services/agents/hands';
+import { VerifierAgent } from '../../services/agents/verifier';
 
 interface AIAssistantProps {
   selectedClip: Clip | null;
@@ -148,7 +153,7 @@ export const AIAssistant: React.FC<AIAssistantProps> = ({
               onChange={(e) => setAssistQuery(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
               disabled={isProcessing}
-              placeholder="Trim silence, add subtitles..."
+              placeholder="Arrange clips, trim silence..."
               className="flex-1 bg-transparent border-none outline-none text-xs text-white placeholder:text-neutral-600 py-2 min-w-[50px] px-2"
             />
             <button onClick={handleSendMessage} disabled={isProcessing || !assistQuery.trim()} className="p-2 hover:bg-neutral-800 rounded-xl text-purple-400 transition-colors shrink-0 disabled:opacity-30 disabled:cursor-not-allowed">

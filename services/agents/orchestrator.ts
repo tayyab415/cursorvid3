@@ -118,6 +118,8 @@ export class OrchestratorAgent {
     - ripple_delete: Remove clip and close gap.
     - split_clip: Cut a clip.
     - generate_voiceover: Create new audio.
+    - generate_video_asset: Create new video (Veo).
+    - generate_image_asset: Create new image (Gemini).
     - add_text_overlay: Add text/subtitles/titles.
     `;
 

@@ -1,3 +1,4 @@
+
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Timeline } from './components/Timeline';
 import { CanvasControls } from './components/CanvasControls';
@@ -10,7 +11,7 @@ import {
   Sparkles, Scissors, Gauge, Download, Volume2, VolumeX, X, 
   Image as ImageIcon, Film, Mic, Camera, Trash2, Info, Captions, 
   Type, Bold, Italic, Underline, AlignCenter, AlignLeft, AlignRight, 
-  Check, ChevronLeft 
+  Check, ChevronLeft, Bot
 } from 'lucide-react';
 import { timelineStore } from './timeline/store';
 
@@ -364,6 +365,142 @@ const GeminiLogo = ({ className = "w-6 h-6" }: { className?: string }) => (
     </svg>
 );
 
+// --- NEW COMPONENT: GENERATION APPROVAL MODAL ---
+const GenerationApprovalModal = ({ 
+    isOpen, 
+    onClose, 
+    onConfirm, 
+    request 
+}: { 
+    isOpen: boolean, 
+    onClose: () => void, 
+    onConfirm: (params: any) => void, 
+    request: { tool: string, params: any } | null 
+}) => {
+    if (!isOpen || !request) return null;
+
+    const [params, setParams] = useState(request.params);
+    const [isThinking, setIsThinking] = useState(false);
+
+    useEffect(() => {
+        setParams(request.params);
+    }, [request]);
+
+    const handleChange = (key: string, value: any) => {
+        setParams(prev => ({ ...prev, [key]: value }));
+    };
+
+    const isVideo = request.tool === 'generate_video_asset';
+    const isImage = request.tool === 'generate_image_asset';
+    const isAudio = request.tool === 'generate_voiceover';
+
+    return (
+        <div className="fixed inset-0 z-[800] flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={onClose} />
+            <div className="relative w-full max-w-lg bg-neutral-900 border border-neutral-700 rounded-2xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+                <div className="p-4 border-b border-neutral-800 bg-neutral-950 flex items-center gap-3">
+                    <Bot className="w-5 h-5 text-purple-400" />
+                    <div>
+                        <h3 className="text-sm font-bold text-white">Generation Approval</h3>
+                        <p className="text-[10px] text-neutral-400 uppercase tracking-wider">AI Suggested Parameters</p>
+                    </div>
+                </div>
+                
+                <div className="p-6 space-y-4">
+                    {/* Model Suggestion Banner */}
+                    {params.model && (
+                        <div className="bg-purple-900/20 border border-purple-500/30 rounded-lg p-3 flex items-start gap-3">
+                            <Sparkles className="w-4 h-4 text-purple-400 mt-0.5 shrink-0" />
+                            <div>
+                                <p className="text-xs font-bold text-purple-200">AI Model Selection</p>
+                                <p className="text-xs text-purple-300/80 mt-0.5">
+                                    Suggested <strong>{params.model}</strong> based on task complexity.
+                                </p>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Common: Prompt / Text */}
+                    <div className="space-y-1.5">
+                        <label className="text-xs font-semibold text-neutral-400">
+                            {isAudio ? 'Script' : 'Prompt'}
+                        </label>
+                        <textarea 
+                            value={isAudio ? params.text : params.prompt} 
+                            onChange={(e) => handleChange(isAudio ? 'text' : 'prompt', e.target.value)}
+                            className="w-full h-24 bg-neutral-950 border border-neutral-800 rounded-lg p-3 text-xs text-neutral-200 focus:border-purple-500 outline-none resize-none"
+                        />
+                    </div>
+
+                    {/* Type Specific Controls */}
+                    <div className="grid grid-cols-2 gap-4">
+                        {isVideo && (
+                            <>
+                                <div>
+                                    <label className="text-[10px] font-semibold text-neutral-500 block mb-1">Model</label>
+                                    <select 
+                                        value={params.model || 'veo-3.1-fast-generate-preview'} 
+                                        onChange={(e) => handleChange('model', e.target.value)}
+                                        className="w-full bg-neutral-950 border border-neutral-800 rounded p-2 text-xs text-white"
+                                    >
+                                        <option value="veo-3.1-fast-generate-preview">Veo 3.1 Fast</option>
+                                        <option value="veo-3.1-generate-preview">Veo 3.1 Quality</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="text-[10px] font-semibold text-neutral-500 block mb-1">Duration</label>
+                                    <select 
+                                        value={params.duration || 4} 
+                                        onChange={(e) => handleChange('duration', Number(e.target.value))}
+                                        className="w-full bg-neutral-950 border border-neutral-800 rounded p-2 text-xs text-white"
+                                    >
+                                        <option value={4}>4 Seconds</option>
+                                        <option value={8}>8 Seconds</option>
+                                    </select>
+                                </div>
+                            </>
+                        )}
+                        {isImage && (
+                            <div>
+                                <label className="text-[10px] font-semibold text-neutral-500 block mb-1">Model</label>
+                                <select 
+                                    value={params.model || 'gemini-2.5-flash-image'} 
+                                    onChange={(e) => handleChange('model', e.target.value)}
+                                    className="w-full bg-neutral-950 border border-neutral-800 rounded p-2 text-xs text-white"
+                                >
+                                    <option value="gemini-2.5-flash-image">Gemini 2.5 Flash</option>
+                                    <option value="gemini-3-pro-image-preview">Gemini 3 Pro</option>
+                                </select>
+                            </div>
+                        )}
+                        {isAudio && (
+                            <div>
+                                <label className="text-[10px] font-semibold text-neutral-500 block mb-1">Voice</label>
+                                <select 
+                                    value={params.voice || 'Kore'} 
+                                    onChange={(e) => handleChange('voice', e.target.value)}
+                                    className="w-full bg-neutral-950 border border-neutral-800 rounded p-2 text-xs text-white"
+                                >
+                                    {['Kore', 'Puck', 'Charon', 'Fenrir', 'Zephyr'].map(v => (
+                                        <option key={v} value={v}>{v}</option>
+                                    ))}
+                                </select>
+                            </div>
+                        )}
+                    </div>
+                </div>
+
+                <div className="p-4 border-t border-neutral-800 bg-neutral-950 flex justify-end gap-3">
+                    <button onClick={onClose} className="px-4 py-2 text-xs font-bold text-neutral-400 hover:text-white transition-colors">Cancel</button>
+                    <button onClick={() => onConfirm(params)} className="px-6 py-2 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-500 hover:to-blue-500 text-white text-xs font-bold rounded-lg shadow-lg flex items-center gap-2 transition-transform active:scale-95">
+                        <Sparkles size={14} className="text-yellow-200" /> Confirm & Generate
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+};
+
 
 export default function App() {
   const [tracks, setTracks] = useState<number[]>([0, 1, 2, 3]);
@@ -424,6 +561,9 @@ export default function App() {
   // CHAT STATE
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
+  
+  // --- NEW: Approval State ---
+  const [pendingApproval, setPendingApproval] = useState<{ tool: string, params: any } | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null); 
   const canvasRef = useRef<HTMLCanvasElement>(null); 
@@ -457,12 +597,17 @@ export default function App() {
     brain,
     hands,
     verifier,
-    (agent, thought) => {
+    (agent, thought, toolAction) => {
         setChatHistory(prev => [...prev, {
             role: 'agent',
             agentType: agent,
-            text: thought
+            text: thought,
+            toolAction: toolAction // Pass action to UI
         }]);
+    },
+    // onApprovalRequest Callback
+    (request) => {
+        setPendingApproval(request);
     }
   );
 
@@ -479,7 +624,13 @@ export default function App() {
   };
 
   const handleExecuteAIAction = async (action: ToolAction) => {
-      // Legacy or direct tool actions could be routed through Hands
+      if (action.tool_id === 'USER_ACTION_REQUEST' as any) {
+          if (action.button_label.includes("Upload")) {
+              triggerLocalUpload();
+          }
+          return;
+      }
+
       setIsGenerating(true);
       await hands.execute({ 
           operation: action.tool_id.toLowerCase(), 
@@ -487,6 +638,86 @@ export default function App() {
           intent: action.reasoning 
       });
       setIsGenerating(false);
+  };
+
+  const handleApprovalConfirm = async (params: any) => {
+      if (!pendingApproval) return;
+      setPendingApproval(null);
+      setIsGenerating(true);
+      
+      const { tool } = pendingApproval;
+      
+      try {
+          // Execute based on tool type using the NEW params from modal
+          // We can reuse the same logic as HandsAgent or call functions directly
+          if (tool === 'generate_video_asset') {
+              const videoUrl = await generateVideo(
+                  params.prompt, 
+                  params.model || 'veo-3.1-fast-generate-preview', 
+                  '16:9', 
+                  '720p', 
+                  Number(params.duration) || 4
+              );
+              
+              timelineStore.addClip({
+                id: `gen-vid-${Date.now()}`,
+                title: `Veo: ${params.prompt.slice(0, 15)}...`,
+                type: 'video',
+                startTime: Number(params.insertTime),
+                duration: Number(params.duration) || 4,
+                sourceStartTime: 0,
+                sourceUrl: videoUrl,
+                trackId: Number(params.trackId) || 1,
+                volume: 1,
+                speed: 1,
+                transform: { x: 0, y: 0, scale: 1, rotation: 0 }
+              });
+          } else if (tool === 'generate_image_asset') {
+              const base64Img = await generateImage(params.prompt, params.model || 'gemini-2.5-flash-image');
+              const imgUrl = `data:image/png;base64,${base64Img}`;
+              
+              timelineStore.addClip({
+                id: `gen-img-${Date.now()}`,
+                title: `Img: ${params.prompt.slice(0, 15)}...`,
+                type: 'image',
+                startTime: Number(params.insertTime),
+                duration: Number(params.duration) || 5,
+                sourceStartTime: 0,
+                sourceUrl: imgUrl,
+                trackId: Number(params.trackId) || 1,
+                transform: { x: 0, y: 0, scale: 1, rotation: 0 }
+              });
+          } else if (tool === 'generate_voiceover') {
+              const audioUrl = await generateSpeech(params.text, params.voice || 'Kore');
+              const tempAudio = new Audio(audioUrl);
+              await new Promise<void>((resolve) => {
+                 tempAudio.onloadedmetadata = () => resolve();
+                 tempAudio.onerror = () => resolve();
+              });
+              
+              timelineStore.addClip({
+                id: `vo-${Date.now()}`,
+                title: `VO: ${params.text.slice(0, 15)}...`,
+                type: 'audio',
+                startTime: Number(params.insertTime),
+                duration: tempAudio.duration || 5,
+                sourceStartTime: 0,
+                sourceUrl: audioUrl,
+                trackId: Number(params.trackId) || 2,
+                volume: 1,
+                speed: 1,
+                transform: { x: 0, y: 0, scale: 1, rotation: 0 }
+              });
+          }
+          
+          setChatHistory(prev => [...prev, { role: 'system', text: "✅ Content generated and added to timeline." }]);
+
+      } catch (e: any) {
+          console.error("Generation Error:", e);
+          setChatHistory(prev => [...prev, { role: 'system', text: `❌ Generation failed: ${e.message}` }]);
+      } finally {
+          setIsGenerating(false);
+      }
   };
   
   // ... (Playback Logic Same as before) ...
@@ -537,7 +768,7 @@ export default function App() {
   // Shortcuts
   useEffect(() => {
       const handleGlobalKeyDown = (e: KeyboardEvent) => {
-          if (e.target instanceof HTMLInputElement) return;
+          if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
           const isMod = e.ctrlKey || e.metaKey;
           if (e.code === 'Space') { e.preventDefault(); togglePlay(); } 
           else if (e.key === 'Backspace' || e.key === 'Delete') { handleDelete(selectedClipIds); } 
@@ -828,6 +1059,12 @@ export default function App() {
   // Render
   return (
     <div className="flex flex-col h-screen bg-neutral-950 text-neutral-100 font-sans overflow-hidden">
+      <GenerationApprovalModal 
+          isOpen={!!pendingApproval} 
+          onClose={() => setPendingApproval(null)} 
+          onConfirm={handleApprovalConfirm} 
+          request={pendingApproval} 
+      />
       <RangeEditorModal isOpen={rangeModalOpen} onClose={() => { setRangeModalOpen(false); setIsSelectingScope(false); }} onConfirm={handleRangeConfirm} initialRange={liveScopeRange || { start: 0, end: 5 }} clips={clips} mediaRefs={mediaRefs} />
       <input type="file" multiple accept="video/*,image/*,audio/*" className="hidden" ref={fileInputRef} onChange={handleAddMedia} />
       <input type="file" accept="image/*" className="hidden" ref={referenceImageInputRef} onChange={handleReferenceImageFileChange} />

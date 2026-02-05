@@ -1,7 +1,7 @@
 
 import { timelineStore } from '../../timeline/store';
 import { TimelineOps } from '../../timeline/operations';
-import { generateSpeech } from '../gemini'; 
+import { generateSpeech, generateVideo, generateImage } from '../gemini'; 
 import { Clip } from '../../types';
 
 export interface HandsOutput {
@@ -9,6 +9,8 @@ export interface HandsOutput {
   success: boolean;
   changes: string[];
   error?: string;
+  actionRequired?: { message: string, type: string };
+  approvalRequired?: { tool: string, params: any };
 }
 
 export class HandsAgent {
@@ -20,7 +22,33 @@ export class HandsAgent {
       // Simulate "work" time for UI visibility
       await new Promise(r => setTimeout(r, 600));
 
+      // INTERCEPTION LOGIC FOR GENERATION TOOLS
+      if (['generate_video_asset', 'generate_image_asset', 'generate_voiceover'].includes(operation)) {
+          return {
+              thought: `Preparing to generate content (${operation}). Pausing for user approval on parameters.`,
+              success: true,
+              changes: [],
+              approvalRequired: {
+                  tool: operation,
+                  params: parameters
+              }
+          };
+      }
+
       switch (operation) {
+        case 'move_clip':
+          TimelineOps.moveClip(timelineStore, parameters.clipId, Number(parameters.startTime), Number(parameters.trackId));
+          changes.push(`Moved ${parameters.clipId} to ${parameters.startTime}s (Track ${parameters.trackId})`);
+          break;
+
+        case 'request_user_assistance':
+          return {
+              thought: `Requesting user help: ${parameters.message}`,
+              success: true,
+              changes: [],
+              actionRequired: { message: parameters.message, type: parameters.actionType }
+          };
+
         case 'update_clip_property':
           TimelineOps.updateClipProperty(
             timelineStore, 
@@ -78,33 +106,6 @@ export class HandsAgent {
           };
           TimelineOps.addClip(timelineStore, textClip);
           changes.push(`Added text "${parameters.text.slice(0, 20)}..." at ${parameters.startTime}s`);
-          break;
-
-        case 'generate_voiceover':
-          // Hands can use tools (API calls) but doesn't "think" about content
-          const audioUrl = await generateSpeech(parameters.text, 'Kore');
-          
-          const tempAudio = new Audio(audioUrl);
-          await new Promise<void>((resolve) => {
-             tempAudio.onloadedmetadata = () => resolve();
-             tempAudio.onerror = () => resolve();
-          });
-          
-          const newClip: Clip = {
-            id: `vo-${Date.now()}`,
-            title: `VO: ${parameters.text.slice(0, 15)}...`,
-            type: 'audio',
-            startTime: Number(parameters.insertTime),
-            duration: tempAudio.duration || 5,
-            sourceStartTime: 0,
-            sourceUrl: audioUrl,
-            trackId: Number(parameters.trackId) || 2,
-            volume: 1,
-            speed: 1,
-            transform: { x: 0, y: 0, scale: 1, rotation: 0 }
-          };
-          TimelineOps.addClip(timelineStore, newClip);
-          changes.push(`Generated VO: "${parameters.text.slice(0, 20)}..." at ${parameters.insertTime}s`);
           break;
           
         default:

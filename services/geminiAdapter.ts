@@ -7,12 +7,6 @@ import { sliceAudioBlob, captureFrameFromVideoUrl } from '../utils/videoUtils';
  * 
  * Goal: Convert a semantic "TimelineRange" (Editor Truth) into a Multimodal Payload
  * that simulates "Real Video" for Gemini.
- * 
- * Strategy:
- * 1. Audio: Slice real audio buffers (video soul/rhythm).
- * 2. Visuals: Reconstruct the FINAL COMPOSED OUTPUT (including overlays, text, layers).
- *    We do not just send raw source video; we render what the user sees.
- * 3. Text: Describe structural layer data.
  */
 
 // Helper to load image from URL (or base64) into an HTMLImageElement for drawing
@@ -27,7 +21,6 @@ const loadImage = (url: string): Promise<HTMLImageElement> => {
 };
 
 // Renders a specific clip onto the given canvas context
-// Matches the visual logic of App.tsx
 const drawClipToContext = (
     ctx: CanvasRenderingContext2D,
     clip: Clip,
@@ -60,15 +53,13 @@ const drawClipToContext = (
 
         const fontWeight = style.isBold ? 'bold' : 'normal';
         const fontStyle = style.isItalic ? 'italic' : 'normal';
-        // Scale font slightly for high-res analysis context if needed, but 1:1 is usually fine
         ctx.font = `${fontStyle} ${fontWeight} ${style.fontSize}px ${style.fontFamily}, sans-serif`;
         ctx.textAlign = style.align as any || 'center';
         ctx.textBaseline = 'middle';
 
         const lines = clip.text.split('\n');
         const lineHeight = style.fontSize * 1.2;
-        const metrics = ctx.measureText(lines[0]); // Approx width based on first line
-        // Background calc
+        const metrics = ctx.measureText(lines[0]); 
         if (style.backgroundOpacity > 0) {
             const bgWidth = metrics.width + (style.fontSize * 1.5);
             const bgHeight = lineHeight * lines.length + (style.fontSize * 0.5);
@@ -82,14 +73,12 @@ const drawClipToContext = (
         ctx.fillStyle = style.color;
         lines.forEach((line, i) => {
             const yOffset = (i - (lines.length - 1) / 2) * lineHeight;
-            // Stroke for readability
             if (style.backgroundOpacity < 0.5) {
                 ctx.strokeStyle = 'black';
                 ctx.lineWidth = style.fontSize / 15;
                 ctx.strokeText(line, 0, yOffset);
             }
             ctx.fillText(line, 0, yOffset);
-            
             if (style.isUnderline) {
                 const lineWidth = ctx.measureText(line).width;
                 ctx.fillRect(-lineWidth / 2, yOffset + style.fontSize/2, lineWidth, style.fontSize/15);
@@ -97,7 +86,6 @@ const drawClipToContext = (
         });
 
     } else if (source) {
-        // Draw Video Frame or Image
         let srcW = 0, srcH = 0;
         if (source instanceof HTMLVideoElement) {
             srcW = source.videoWidth;
@@ -114,8 +102,6 @@ const drawClipToContext = (
             const aspectSrc = srcW / srcH;
             const aspectDest = width / height;
             let drawW, drawH;
-
-            // Contain logic (match App.tsx)
             if (aspectSrc > aspectDest) {
                 drawW = width;
                 drawH = width / aspectSrc;
@@ -126,18 +112,75 @@ const drawClipToContext = (
             ctx.drawImage(source, -drawW/2, -drawH/2, drawW, drawH);
         }
     }
-
     ctx.restore();
+};
+
+/**
+ * STORYBOARD MODE
+ * Extracts a representative frame from EVERY clip to help the AI understand
+ * the entire inventory of assets for rearrangement.
+ */
+export const storyboardToGeminiParts = async (
+    clips: Clip[]
+): Promise<any[]> => {
+    const parts: any[] = [];
+    
+    parts.push({ text: "INVENTORY ANALYSIS (Storyboard Mode): Analyzing individual clips to determine best arrangement." });
+
+    for (const clip of clips) {
+        if (clip.type === 'audio') {
+             parts.push({ text: `[Clip ${clip.id}] Type: AUDIO. Title: "${clip.title}". Duration: ${clip.duration}s.` });
+             continue;
+        }
+
+        // For video/image, grab a frame from the middle
+        const midPoint = clip.sourceStartTime + (clip.duration / 2);
+        let base64 = "";
+
+        try {
+            if (clip.type === 'image' && clip.sourceUrl) {
+                // Just load the image
+                 const img = await loadImage(clip.sourceUrl);
+                 const canvas = document.createElement('canvas');
+                 canvas.width = 320; // Low res for survey
+                 canvas.height = 180;
+                 const ctx = canvas.getContext('2d');
+                 if(ctx) {
+                     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                     base64 = canvas.toDataURL('image/jpeg', 0.5).split(',')[1];
+                 }
+            } else if (clip.type === 'video' && clip.sourceUrl) {
+                 base64 = await captureFrameFromVideoUrl(clip.sourceUrl, midPoint);
+                 // Downscale if capture returned high res (captureFrame usually returns full res)
+                 // For token efficiency in survey mode, we rely on the backend capture or just send it.
+                 // To save tokens, let's assume captureFrameFromVideoUrl is reasonably sized or Gemini handles it.
+                 // Actually, let's strip the prefix if it exists
+                 if (base64.includes(',')) base64 = base64.split(',')[1];
+            }
+        } catch (e) {
+            console.warn(`Failed to capture storyboard frame for ${clip.id}`, e);
+        }
+
+        if (base64) {
+            parts.push({
+                inlineData: { mimeType: 'image/jpeg', data: base64 }
+            });
+            parts.push({ text: `[Clip ${clip.id}] Type: ${clip.type.toUpperCase()}. Title: "${clip.title}". Content shown above.` });
+        } else {
+            parts.push({ text: `[Clip ${clip.id}] Type: ${clip.type.toUpperCase()}. Title: "${clip.title}". (No visual available)` });
+        }
+    }
+    
+    return parts;
 };
 
 export const rangeToGeminiParts = async (
     range: TimelineRange,
-    clips: Clip[], // Full clip list
-    mediaRefs: { [key: string]: HTMLVideoElement | HTMLAudioElement | null } // Live refs (unused for offscreen composition usually, but kept for signature)
+    clips: Clip[], 
+    mediaRefs: { [key: string]: HTMLVideoElement | HTMLAudioElement | null } 
 ): Promise<any[]> => {
     const parts: any[] = [];
     
-    // 1. CONTEXTUAL METADATA
     const contextDescription = {
         type: "TimelineContext",
         range: `${range.start.toFixed(1)}s to ${range.end.toFixed(1)}s`,
@@ -152,8 +195,7 @@ export const rangeToGeminiParts = async (
     };
     parts.push({ text: `Timeline Metadata: ${JSON.stringify(contextDescription)}` });
 
-    // 2. AUDIO SLICING
-    // Extract dominant audio
+    // Audio Slicing (same as before)
     const activeAudioVideo = clips.filter(c => 
         c.startTime < range.end && (c.startTime + c.duration) > range.start &&
         (c.type === 'video' || c.type === 'audio')
@@ -177,87 +219,65 @@ export const rangeToGeminiParts = async (
         }
     }
 
-    // 3. VISUAL COMPOSITION (The "Visual Truth")
-    // We render the ACTUAL composed canvas for keyframes.
-    // This allows Gemini to see text overlays, images, and layout.
-    
+    // Visual Composition (same as before)
     const duration = range.end - range.start;
-    // Dynamic sampling: ~1 frame every 5 seconds, min 1, max 8.
     let frameCount = Math.min(Math.ceil(duration / 5), 8);
     if (frameCount < 1) frameCount = 1;
     
     const step = duration / (frameCount + 1);
-    
     const sampleTimes: number[] = [];
     for(let i=1; i<=frameCount; i++) {
         sampleTimes.push(range.start + (step * i));
     }
 
     for (const t of sampleTimes) {
-        // Create offscreen canvas for composition
         const canvas = document.createElement('canvas');
         canvas.width = 1280;
         canvas.height = 720;
         const ctx = canvas.getContext('2d');
         if (!ctx) continue;
 
-        // Fill background
         ctx.fillStyle = '#000000';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-        // Find active clips at time `t`
         const activeClips = clips
             .filter(c => t >= c.startTime && t < c.startTime + c.duration)
-            .sort((a, b) => a.trackId - b.trackId); // Draw bottom-up
+            .sort((a, b) => a.trackId - b.trackId); 
 
         for (const clip of activeClips) {
             if (clip.type === 'audio') continue;
-
             let renderSource: HTMLImageElement | null = null;
 
-            // PREPARE SOURCE
             if (clip.type === 'text') {
-                // Text doesn't need a source image, handled in draw
+                // Handled in draw
             } 
             else if (clip.type === 'image' && clip.sourceUrl) {
                 try {
                     renderSource = await loadImage(clip.sourceUrl);
-                } catch (e) { console.warn("Failed to load image for composition", e); }
+                } catch (e) { }
             } 
             else if (clip.type === 'video' && clip.sourceUrl) {
-                // Determine exact source frame timestamp
                 const offset = t - clip.startTime;
                 const sourceTime = clip.sourceStartTime + (offset * (clip.speed || 1));
-                
                 try {
-                    // Capture raw frame from video file
-                    // This is slightly slow but accurate
                     const frameBase64 = await captureFrameFromVideoUrl(clip.sourceUrl, sourceTime);
                     renderSource = await loadImage(frameBase64);
-                } catch (e) { console.warn("Failed to capture video frame for composition", e); }
+                } catch (e) { }
             }
 
-            // DRAW TO CANVAS
-            // Only draw if we have a source OR it's a text clip
             if (clip.type === 'text' || renderSource) {
                 drawClipToContext(ctx, clip, renderSource, canvas.width, canvas.height);
             }
         }
 
-        // Export Composed Frame
         try {
-            const dataUrl = canvas.toDataURL('image/jpeg', 0.7); // 70% quality to save tokens
+            const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
             const base64 = dataUrl.split(',')[1];
             parts.push({
-                inlineData: {
-                    mimeType: 'image/jpeg',
-                    data: base64
-                }
+                inlineData: { mimeType: 'image/jpeg', data: base64 }
             });
             parts.push({ text: `[Composed Visual Frame at ${t.toFixed(1)}s]` });
-        } catch (e) {
-            console.error("Canvas export failed", e);
-        }
+        } catch (e) { }
     }
 
     return parts;

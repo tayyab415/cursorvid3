@@ -3,15 +3,40 @@ import { Type, FunctionDeclaration } from "@google/genai";
 
 export const TIMELINE_PRIMITIVES: FunctionDeclaration[] = [
   {
+      name: 'move_clip',
+      description: 'Move a clip to a specific time and track. Use this for arranging or reordering the timeline.',
+      parameters: {
+          type: Type.OBJECT,
+          properties: {
+              clipId: { type: Type.STRING },
+              startTime: { type: Type.NUMBER, description: 'New start time in seconds' },
+              trackId: { type: Type.NUMBER, description: 'Target track (0-bottom, 3-top)' }
+          },
+          required: ['clipId', 'startTime', 'trackId']
+      }
+  },
+  {
+      name: 'request_user_assistance',
+      description: 'Ask the human user to do something you cannot do (e.g. upload a file, record voice).',
+      parameters: {
+          type: Type.OBJECT,
+          properties: {
+              message: { type: Type.STRING, description: 'The prompt to show the user (e.g. "Please upload a logo image")' },
+              actionType: { type: Type.STRING, enum: ['upload', 'record', 'confirm'], description: 'The type of button to show' }
+          },
+          required: ['message', 'actionType']
+      }
+  },
+  {
     name: 'update_clip_property',
-    description: 'Modify standard properties: position, duration, volume, speed, trackId. Use apply_visual_transform for zoom/pan.',
+    description: 'Modify standard properties: duration, volume, speed. Use move_clip for position.',
     parameters: {
       type: Type.OBJECT,
       properties: {
         clipId: { type: Type.STRING, description: 'Target clip ID (required)' },
         property: { 
           type: Type.STRING, 
-          enum: ['startTime', 'duration', 'volume', 'speed', 'trackId'],
+          enum: ['duration', 'volume', 'speed'],
           description: 'Property to modify'
         },
         value: { type: Type.NUMBER, description: 'New value' }
@@ -37,10 +62,41 @@ export const TIMELINE_PRIMITIVES: FunctionDeclaration[] = [
       type: Type.OBJECT,
       properties: {
         text: { type: Type.STRING, description: 'Script to speak' },
+        voice: { type: Type.STRING, enum: ['Kore', 'Puck', 'Charon', 'Fenrir', 'Zephyr'], description: 'Voice personality' },
         insertTime: { type: Type.NUMBER, description: 'Timeline position (seconds)' },
         trackId: { type: Type.NUMBER, description: 'Audio track (default: 2)' }
       },
       required: ['text', 'insertTime']
+    }
+  },
+  {
+    name: 'generate_video_asset',
+    description: 'Generate a NEW video using Veo. Use when the user requests content that does not exist or to replace a placeholder.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        prompt: { type: Type.STRING, description: 'Detailed visual description for Veo.' },
+        model: { type: Type.STRING, enum: ['veo-3.1-fast-generate-preview', 'veo-3.1-generate-preview'], description: 'Use "fast" for drafts, "generate" for high quality.' },
+        duration: { type: Type.NUMBER, description: 'Duration in seconds (4 or 8).' },
+        insertTime: { type: Type.NUMBER, description: 'Timeline position.' },
+        trackId: { type: Type.NUMBER, description: 'Target track.' }
+      },
+      required: ['prompt', 'insertTime']
+    }
+  },
+  {
+    name: 'generate_image_asset',
+    description: 'Generate a NEW image using Gemini. Use for static backgrounds, title cards, or B-roll.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        prompt: { type: Type.STRING, description: 'Detailed visual description.' },
+        model: { type: Type.STRING, enum: ['gemini-2.5-flash-image', 'gemini-3-pro-image-preview'], description: 'Use "flash" for speed, "pro" for high fidelity.' },
+        insertTime: { type: Type.NUMBER, description: 'Timeline position.' },
+        duration: { type: Type.NUMBER, description: 'How long to show the image.' },
+        trackId: { type: Type.NUMBER, description: 'Target track.' }
+      },
+      required: ['prompt', 'insertTime', 'duration']
     }
   },
   {
@@ -69,7 +125,7 @@ export const TIMELINE_PRIMITIVES: FunctionDeclaration[] = [
   },
   {
       name: 'apply_visual_transform',
-      description: 'Apply visual transformations like Zoom, Pan, or Scale. Use this for "Zoom in", "Crop", or "Picture in Picture".',
+      description: 'Apply visual transformations like Zoom, Pan, or Scale.',
       parameters: {
           type: Type.OBJECT,
           properties: {

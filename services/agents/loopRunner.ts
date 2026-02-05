@@ -3,7 +3,7 @@ import { EyesAgent } from './eyes';
 import { BrainAgent } from './brain';
 import { HandsAgent } from './hands';
 import { VerifierAgent } from './verifier';
-import { Clip } from '../../types';
+import { Clip, ToolAction } from '../../types';
 import { timelineStore } from '../../timeline/store';
 
 export class AgenticLoop {
@@ -12,7 +12,8 @@ export class AgenticLoop {
     private brain: BrainAgent,
     private hands: HandsAgent,
     private verifier: VerifierAgent,
-    private onThought: (agent: 'eyes' | 'brain' | 'hands' | 'verifier' | 'system', thought: string) => void
+    private onThought: (agent: 'eyes' | 'brain' | 'hands' | 'verifier' | 'system', thought: string, action?: ToolAction) => void,
+    private onApprovalRequest?: (request: { tool: string, params: any }) => void
   ) {}
 
   async run(userIntent: string, clips: Clip[], mediaRefs: any): Promise<void> {
@@ -50,9 +51,30 @@ export class AgenticLoop {
             const result = await this.hands.execute(step);
             this.onThought('hands', result.thought);
             
+            // Check for Generation Approval Request
+            if (result.approvalRequired) {
+                this.onThought('system', `🔔 Pausing for User Approval: ${result.approvalRequired.tool}`);
+                if (this.onApprovalRequest) {
+                    this.onApprovalRequest(result.approvalRequired);
+                }
+                return; // Stop the loop to wait for user
+            }
+
+            // Check if Hands requested User Action (e.g. Upload)
+            if (result.actionRequired) {
+                const toolAction: ToolAction = {
+                    tool_id: 'USER_ACTION_REQUEST' as any,
+                    button_label: result.actionRequired.type === 'upload' ? 'Upload Media' : 'Confirm',
+                    reasoning: result.actionRequired.message,
+                    parameters: {}
+                };
+                this.onThought('system', `🔔 User Action Required: ${result.actionRequired.message}`, toolAction);
+                return; // Stop the loop to wait for user
+            }
+
             if (!result.success) {
-            this.onThought('system', `❌ Execution failed: ${result.error}`);
-            return; 
+                this.onThought('system', `❌ Execution failed: ${result.error}`);
+                return; 
             }
         }
 
@@ -70,15 +92,14 @@ export class AgenticLoop {
             this.onThought('system', `⚠️ Issues detected: ${issues}`);
             
             if (iteration >= MAX_ITERATIONS) {
-            this.onThought('system', `🛑 Max iterations reached. Stopping to prevent infinite loop.`);
-            return;
+                this.onThought('system', `🛑 Max iterations reached. Stopping to prevent infinite loop.`);
+                return;
             }
             
             // Adjust intent for next loop to fix issues
             currentIntent = `Fix these issues: ${issues}. Previous goal: ${userIntent}`;
             this.onThought('brain', `🔄 Re-planning to fix detected issues...`);
             
-            // Wait a bit for UI readability
             await new Promise(r => setTimeout(r, 1000));
         }
         }

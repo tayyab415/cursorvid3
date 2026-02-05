@@ -41,20 +41,26 @@ export class BrainAgent {
     EYES ANALYSIS: ${JSON.stringify(analysis)}
     CURRENT TIMELINE: ${JSON.stringify(timelineContext)}
     
+    AVAILABLE TOOLS:
+    - move_clip, ripple_delete, split_clip, update_clip_property
+    - apply_visual_transform (zoom, pan)
+    - add_text_overlay
+    - generate_voiceover (TTS)
+    - generate_video_asset (Veo 3 - use for intros, b-roll, transitions)
+    - generate_image_asset (Imagen/Gemini - use for static backgrounds)
+    - request_user_assistance (ONLY use if generation is impossible or the user explicitly asks to upload their own specific file)
+
     INSTRUCTIONS:
-    1. Break the task into 1-5 atomic steps.
-    2. Each step MUST map to a function: 
-       - update_clip_property (move, resize, volume, speed, track)
-       - apply_visual_transform (zoom, pan, scale, crop, rotate)
-       - ripple_delete (remove clip and close gap)
-       - split_clip (cut a clip in half)
-       - generate_voiceover (create audio)
-       - add_text_overlay (add subtitles, titles)
-    3. Be specific with timestamps and values.
+    1. **PRIORITIZE GENERATION**: If the user asks to "create", "generate", or "make" something (like an intro) and you don't have the files, DO NOT ask them to upload. Use 'generate_video_asset' or 'generate_image_asset'.
+    2. **MODEL SELECTION**: 
+       - For 'generate_video_asset': Use 'veo-3.1-fast-generate-preview' for quick drafts or simple concepts. Use 'veo-3.1-generate-preview' for high-quality, complex, or cinematic requests.
+       - For 'generate_image_asset': Use 'gemini-2.5-flash-image' by default. Use 'gemini-3-pro-image-preview' for detailed art or text rendering.
+    3. **CONTEXTUAL PROMPTING**: Write highly detailed visual prompts based on the 'analysis'.
+    4. **AUTONOMY**: Be decisive.
     
     OUTPUT JSON SCHEMA:
     {
-        "thought": "First-person reasoning...",
+        "thought": "First-person reasoning. Explain why you chose the specific model and parameters.",
         "plan": {
             "goal": "High level goal",
             "reasoning": "Why this plan works",

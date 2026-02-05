@@ -1,7 +1,7 @@
 
 import { timelineStore } from '../../timeline/store';
 import { TimelineOps } from '../../timeline/operations';
-import { generateSpeech } from '../gemini'; 
+import { generateSpeech, generateVideo, generateImage } from '../gemini'; 
 import { Clip } from '../../types';
 
 interface ExecutionResult {
@@ -19,6 +19,13 @@ export class ExecutorAgent {
       console.log(`[Executor] Running ${name}`, args);
 
       switch (name) {
+        case 'move_clip':
+          TimelineOps.moveClip(timelineStore, args.clipId, Number(args.startTime), Number(args.trackId));
+          break;
+
+        case 'request_user_assistance':
+          return { success: true, operation: name, clipId: 'system-request' };
+
         case 'update_clip_property':
           TimelineOps.updateClipProperty(
             timelineStore, 
@@ -95,6 +102,49 @@ export class ExecutorAgent {
           };
           TimelineOps.addClip(timelineStore, newClip);
           return { success: true, operation: name, clipId: newClip.id };
+
+        case 'generate_video_asset':
+          const videoUrl = await generateVideo(
+              args.prompt, 
+              'veo-3.1-fast-generate-preview', 
+              '16:9', 
+              '720p', 
+              Number(args.duration) || 4
+          );
+          
+          const videoClip: Clip = {
+            id: `gen-vid-${Date.now()}`,
+            title: `Veo: ${args.prompt.slice(0, 15)}...`,
+            type: 'video',
+            startTime: Number(args.insertTime),
+            duration: Number(args.duration) || 4,
+            sourceStartTime: 0,
+            sourceUrl: videoUrl,
+            trackId: Number(args.trackId) || 1,
+            volume: 1,
+            speed: 1,
+            transform: { x: 0, y: 0, scale: 1, rotation: 0 }
+          };
+          TimelineOps.addClip(timelineStore, videoClip);
+          return { success: true, operation: name, clipId: videoClip.id };
+
+        case 'generate_image_asset':
+          const base64Img = await generateImage(args.prompt, 'gemini-2.5-flash-image');
+          const imgUrl = `data:image/png;base64,${base64Img}`;
+          
+          const imgClip: Clip = {
+            id: `gen-img-${Date.now()}`,
+            title: `Img: ${args.prompt.slice(0, 15)}...`,
+            type: 'image',
+            startTime: Number(args.insertTime),
+            duration: Number(args.duration) || 5,
+            sourceStartTime: 0,
+            sourceUrl: imgUrl,
+            trackId: Number(args.trackId) || 1,
+            transform: { x: 0, y: 0, scale: 1, rotation: 0 }
+          };
+          TimelineOps.addClip(timelineStore, imgClip);
+          return { success: true, operation: name, clipId: imgClip.id };
           
         default:
           throw new Error(`Unknown operation: ${name}`);
