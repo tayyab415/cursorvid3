@@ -3,10 +3,12 @@
 import { Clip } from '../../types';
 import { getAiClient } from '../gemini';
 import { Type } from '@google/genai';
+import { AGENT_POLICY } from './agentPolicy';
 
 export interface VerifierOutput {
   thought: string;
   passed: boolean;
+  status?: 'pass' | 'fail' | 'unknown';
   checks: {
     structural: { passed: boolean, issues: string[] };
     intentAlignment: { passed: boolean, reasoning: string };
@@ -53,7 +55,7 @@ export class VerifierAgent {
     try {
         const ai = getAiClient();
         const response = await ai.models.generateContent({
-          model: 'gemini-3-flash-preview',
+          model: AGENT_POLICY.defaults.models.verifier,
           contents: prompt,
           config: { 
               responseMimeType: 'application/json'
@@ -66,10 +68,11 @@ export class VerifierAgent {
         console.error("Verification failed", e);
         return {
             thought: "I couldn't verify the changes due to an error.",
-            passed: true, // Fail open to avoid infinite loops on error
+            passed: false,
+            status: 'unknown',
             checks: {
-                structural: { passed: true, issues: [] },
-                intentAlignment: { passed: true, reasoning: "Verification skipped" }
+                structural: { passed: false, issues: ['Verifier unavailable'] },
+                intentAlignment: { passed: false, reasoning: "Verification skipped because verifier errored" }
             }
         };
     }

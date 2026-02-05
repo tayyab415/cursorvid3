@@ -2,6 +2,7 @@
 import { timelineStore } from '../../timeline/store';
 import { TimelineOps } from '../../timeline/operations';
 import { generateSpeech, generateVideo, generateImage } from '../gemini'; 
+import { AGENT_POLICY, shouldRequireApproval } from './agentPolicy';
 import { Clip } from '../../types';
 
 export interface HandsOutput {
@@ -20,10 +21,10 @@ export class HandsAgent {
     
     try {
       // Simulate "work" time for UI visibility
-      await new Promise(r => setTimeout(r, 600));
+      await new Promise(r => setTimeout(r, AGENT_POLICY.loop.executionPulseMs));
 
       // INTERCEPTION LOGIC FOR GENERATION TOOLS
-      if (['generate_video_asset', 'generate_image_asset', 'generate_voiceover'].includes(operation)) {
+      if (['generate_video_asset', 'generate_image_asset', 'generate_voiceover'].includes(operation) && shouldRequireApproval(operation, parameters)) {
           return {
               thought: `Preparing to generate content (${operation}). Pausing for user approval on parameters.`,
               success: true,
@@ -84,6 +85,77 @@ export class HandsAgent {
           changes.push(`Applied transform to ${parameters.clipId}: scale ${parameters.scale}x`);
           break;
 
+
+        case 'generate_voiceover':
+          const audioUrl = await generateSpeech(parameters.text, parameters.voice || AGENT_POLICY.defaults.models.voice);
+          const tempAudio = new Audio(audioUrl);
+          await new Promise<void>((resolve) => {
+             tempAudio.onloadedmetadata = () => resolve();
+             tempAudio.onerror = () => resolve();
+          });
+
+          const audioClip: Clip = {
+            id: `vo-${Date.now()}`,
+            title: `VO: ${parameters.text.slice(0, 15)}...`,
+            type: 'audio',
+            startTime: Number(parameters.insertTime),
+            duration: tempAudio.duration || 5,
+            sourceStartTime: 0,
+            sourceUrl: audioUrl,
+            trackId: Number(parameters.trackId) || AGENT_POLICY.defaults.tracks.audio,
+            volume: 1,
+            speed: 1,
+            transform: { x: 0, y: 0, scale: 1, rotation: 0 }
+          };
+          TimelineOps.addClip(timelineStore, audioClip);
+          changes.push(`Generated voiceover at ${parameters.insertTime}s`);
+          break;
+
+        case 'generate_video_asset':
+          const videoUrl = await generateVideo(
+              parameters.prompt,
+              parameters.model || AGENT_POLICY.defaults.models.video,
+              '16:9',
+              '720p',
+              Number(parameters.duration) || 4
+          );
+
+          const videoClip: Clip = {
+            id: `gen-vid-${Date.now()}`,
+            title: `Veo: ${parameters.prompt.slice(0, 15)}...`,
+            type: 'video',
+            startTime: Number(parameters.insertTime),
+            duration: Number(parameters.duration) || 4,
+            sourceStartTime: 0,
+            sourceUrl: videoUrl,
+            trackId: Number(parameters.trackId) || AGENT_POLICY.defaults.tracks.video,
+            volume: 1,
+            speed: 1,
+            transform: { x: 0, y: 0, scale: 1, rotation: 0 }
+          };
+          TimelineOps.addClip(timelineStore, videoClip);
+          changes.push(`Generated video asset at ${parameters.insertTime}s`);
+          break;
+
+        case 'generate_image_asset':
+          const base64Img = await generateImage(parameters.prompt, parameters.model || AGENT_POLICY.defaults.models.image);
+          const imgUrl = `data:image/png;base64,${base64Img}`;
+
+          const imageClip: Clip = {
+            id: `gen-img-${Date.now()}`,
+            title: `Img: ${parameters.prompt.slice(0, 15)}...`,
+            type: 'image',
+            startTime: Number(parameters.insertTime),
+            duration: Number(parameters.duration) || 5,
+            sourceStartTime: 0,
+            sourceUrl: imgUrl,
+            trackId: Number(parameters.trackId) || AGENT_POLICY.defaults.tracks.video,
+            transform: { x: 0, y: 0, scale: 1, rotation: 0 }
+          };
+          TimelineOps.addClip(timelineStore, imageClip);
+          changes.push(`Generated image asset at ${parameters.insertTime}s`);
+          break;
+
         case 'add_text_overlay':
           const stylePreset = parameters.style || 'subtitle';
           const isTitle = stylePreset === 'title';
@@ -100,7 +172,7 @@ export class HandsAgent {
               startTime: Number(parameters.startTime),
               duration: Number(parameters.duration),
               sourceStartTime: 0,
-              trackId: 3, 
+              trackId: AGENT_POLICY.defaults.tracks.text, 
               textStyle: textStyle as any,
               transform: { x: 0, y: isTitle ? 0 : 0.35, scale: 1, rotation: 0 } 
           };

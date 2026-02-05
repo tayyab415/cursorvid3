@@ -5,6 +5,7 @@ import { HandsAgent } from './hands';
 import { VerifierAgent } from './verifier';
 import { Clip, ToolAction } from '../../types';
 import { timelineStore } from '../../timeline/store';
+import { AGENT_POLICY } from './agentPolicy';
 
 export class AgenticLoop {
   constructor(
@@ -18,7 +19,7 @@ export class AgenticLoop {
 
   async run(userIntent: string, clips: Clip[], mediaRefs: any): Promise<void> {
     let iteration = 0;
-    const MAX_ITERATIONS = 3;
+    const MAX_ITERATIONS = AGENT_POLICY.loop.maxIterations;
     let currentIntent = userIntent;
 
     try {
@@ -100,7 +101,7 @@ export class AgenticLoop {
             currentIntent = `Fix these issues: ${issues}. Previous goal: ${userIntent}`;
             this.onThought('brain', `🔄 Re-planning to fix detected issues...`);
             
-            await new Promise(r => setTimeout(r, 1000));
+            await new Promise(r => setTimeout(r, AGENT_POLICY.loop.replanDelayMs));
         }
         }
     } catch (e: any) {
