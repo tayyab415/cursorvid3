@@ -3,6 +3,7 @@ import { Clip } from '../../types';
 import { getAiClient } from '../gemini';
 import { rangeToGeminiParts, storyboardToGeminiParts } from '../geminiAdapter';
 import { Type } from '@google/genai';
+import { AGENT_POLICY } from './agentPolicy';
 
 export interface VideoAnalysis {
   thought: string;
@@ -20,7 +21,9 @@ export class EyesAgent {
     // If the timeline is messy (overlapping clips at 0) or contains many clips, 
     // we should do a "Survey" to help the Brain arrange them.
     // For this demo, we'll do a survey if we see > 2 clips.
-    const isSurveyMode = clips.length > 2;
+    const hasOverlaps = clips.some((a, i) => clips.some((b, j) => i !== j && a.trackId === b.trackId && a.startTime < b.startTime + b.duration && b.startTime < a.startTime + a.duration));
+    const duration = clips.reduce((max, c) => Math.max(max, c.startTime + c.duration), 0);
+    const isSurveyMode = clips.length > 4 || hasOverlaps || duration > 45;
 
     let mediaParts: any[] = [];
     let instructions = "";
@@ -37,7 +40,6 @@ export class EyesAgent {
         - "editingNeeds": Suggest an order. E.g. "Move the Intro clip to start", "Place Interview after Intro".
         `;
     } else {
-        const duration = clips.reduce((max, c) => Math.max(max, c.startTime + c.duration), 0);
         const analysisRange = { start: 0, end: Math.min(duration, 30), tracks: [] as any };
         mediaParts = await rangeToGeminiParts(analysisRange, clips, mediaRefs);
         instructions = `
@@ -62,7 +64,7 @@ export class EyesAgent {
 
     try {
         const response = await ai.models.generateContent({
-            model: 'gemini-3-flash-preview',
+            model: AGENT_POLICY.defaults.models.eyes,
             contents: {
                 role: 'user',
                 parts: [

@@ -21,6 +21,7 @@ import { EyesAgent } from './services/agents/eyes';
 import { BrainAgent } from './services/agents/brain';
 import { HandsAgent } from './services/agents/hands';
 import { VerifierAgent } from './services/agents/verifier';
+import { AGENT_POLICY } from './services/agents/agentPolicy';
 
 const DEFAULT_TEXT_STYLE = {
     fontFamily: 'Plus Jakarta Sans',
@@ -642,76 +643,35 @@ export default function App() {
 
   const handleApprovalConfirm = async (params: any) => {
       if (!pendingApproval) return;
+      const { tool } = pendingApproval;
       setPendingApproval(null);
       setIsGenerating(true);
-      
-      const { tool } = pendingApproval;
-      
-      try {
-          // Execute based on tool type using the NEW params from modal
-          // We can reuse the same logic as HandsAgent or call functions directly
-          if (tool === 'generate_video_asset') {
-              const videoUrl = await generateVideo(
-                  params.prompt, 
-                  params.model || 'veo-3.1-fast-generate-preview', 
-                  '16:9', 
-                  '720p', 
-                  Number(params.duration) || 4
-              );
-              
-              timelineStore.addClip({
-                id: `gen-vid-${Date.now()}`,
-                title: `Veo: ${params.prompt.slice(0, 15)}...`,
-                type: 'video',
-                startTime: Number(params.insertTime),
-                duration: Number(params.duration) || 4,
-                sourceStartTime: 0,
-                sourceUrl: videoUrl,
-                trackId: Number(params.trackId) || 1,
-                volume: 1,
-                speed: 1,
-                transform: { x: 0, y: 0, scale: 1, rotation: 0 }
-              });
-          } else if (tool === 'generate_image_asset') {
-              const base64Img = await generateImage(params.prompt, params.model || 'gemini-2.5-flash-image');
-              const imgUrl = `data:image/png;base64,${base64Img}`;
-              
-              timelineStore.addClip({
-                id: `gen-img-${Date.now()}`,
-                title: `Img: ${params.prompt.slice(0, 15)}...`,
-                type: 'image',
-                startTime: Number(params.insertTime),
-                duration: Number(params.duration) || 5,
-                sourceStartTime: 0,
-                sourceUrl: imgUrl,
-                trackId: Number(params.trackId) || 1,
-                transform: { x: 0, y: 0, scale: 1, rotation: 0 }
-              });
-          } else if (tool === 'generate_voiceover') {
-              const audioUrl = await generateSpeech(params.text, params.voice || 'Kore');
-              const tempAudio = new Audio(audioUrl);
-              await new Promise<void>((resolve) => {
-                 tempAudio.onloadedmetadata = () => resolve();
-                 tempAudio.onerror = () => resolve();
-              });
-              
-              timelineStore.addClip({
-                id: `vo-${Date.now()}`,
-                title: `VO: ${params.text.slice(0, 15)}...`,
-                type: 'audio',
-                startTime: Number(params.insertTime),
-                duration: tempAudio.duration || 5,
-                sourceStartTime: 0,
-                sourceUrl: audioUrl,
-                trackId: Number(params.trackId) || 2,
-                volume: 1,
-                speed: 1,
-                transform: { x: 0, y: 0, scale: 1, rotation: 0 }
-              });
-          }
-          
-          setChatHistory(prev => [...prev, { role: 'system', text: "✅ Content generated and added to timeline." }]);
 
+      try {
+          const normalizedParams = {
+            ...params,
+            model: params.model || (tool === 'generate_video_asset'
+              ? AGENT_POLICY.defaults.models.video
+              : tool === 'generate_image_asset'
+                ? AGENT_POLICY.defaults.models.image
+                : undefined),
+            voice: params.voice || AGENT_POLICY.defaults.models.voice,
+            trackId: Number(params.trackId) || (tool === 'generate_voiceover'
+              ? AGENT_POLICY.defaults.tracks.audio
+              : AGENT_POLICY.defaults.tracks.video)
+          };
+
+          const result = await hands.execute({
+            operation: tool,
+            parameters: normalizedParams,
+            intent: `Approved execution for ${tool}`
+          });
+
+          if (!result.success) {
+            throw new Error(result.error || 'Execution failed after approval');
+          }
+
+          setChatHistory(prev => [...prev, { role: 'system', text: "✅ Content generated and added to timeline." }]);
       } catch (e: any) {
           console.error("Generation Error:", e);
           setChatHistory(prev => [...prev, { role: 'system', text: `❌ Generation failed: ${e.message}` }]);

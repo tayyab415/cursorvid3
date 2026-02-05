@@ -4,6 +4,7 @@ import { getAiClient } from '../gemini';
 import { TIMELINE_PRIMITIVES } from '../timelinePrimitives';
 import { VideoAnalysis } from './eyes';
 import { Type, FunctionCallingConfigMode } from '@google/genai';
+import { AGENT_POLICY } from './agentPolicy';
 
 export interface BrainOutput {
   thought: string;
@@ -79,11 +80,12 @@ export class BrainAgent {
 
     try {
         const response = await ai.models.generateContent({
-            model: 'gemini-3-flash-preview',
+            model: AGENT_POLICY.defaults.models.planner,
             contents: prompt,
             config: {
                 responseMimeType: 'application/json',
-                tools: [{ functionDeclarations: TIMELINE_PRIMITIVES }], 
+                tools: [{ functionDeclarations: TIMELINE_PRIMITIVES }],
+                toolConfig: { functionCallingConfig: { mode: FunctionCallingConfigMode.AUTO } }, 
             }
         });
 
