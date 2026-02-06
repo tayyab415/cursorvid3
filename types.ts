@@ -6,6 +6,7 @@ export interface Clip {
   startTime: number; // Where it sits on the timeline
   sourceStartTime: number; // Where it starts in the original video file
   type?: 'video' | 'image' | 'audio' | 'text';
+  strategy?: 'chroma' | 'screen' | 'morph'; // New property for Asset Foundry
   sourceUrl?: string;
   text?: string; // For caption clips
   textStyle?: {

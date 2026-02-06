@@ -1,7 +1,7 @@
 
 import React, { useRef, useEffect, useState } from 'react';
 import { Clip } from '../types';
-import { X, Plus, Image as ImageIcon, Video, Layers, GripVertical, Mic, Wand2, Captions, Check } from 'lucide-react';
+import { X, Plus, Image as ImageIcon, Video, Layers, GripVertical, Mic, Wand2, Captions, Check, FlaskConical } from 'lucide-react';
 
 interface TimelineProps {
   clips: Clip[];
@@ -17,6 +17,7 @@ interface TimelineProps {
   selectedClipIds: string[];
   onTransitionRequest?: (clipA: Clip, clipB: Clip) => void;
   onCaptionRequest?: () => void;
+  onOpenFoundry?: () => void;
   isSelectionMode?: boolean; 
   onRangeChange?: (range: {start: number, end: number} | null) => void; 
   onRangeSelected?: () => void; 
@@ -36,6 +37,7 @@ export const Timeline: React.FC<TimelineProps> = ({
     selectedClipIds,
     onTransitionRequest,
     onCaptionRequest,
+    onOpenFoundry,
     isSelectionMode = false,
     onRangeChange,
     onRangeSelected
@@ -348,6 +350,9 @@ export const Timeline: React.FC<TimelineProps> = ({
                 <button disabled={isSelectionMode} onClick={onCaptionRequest} className="flex items-center gap-1.5 text-[10px] bg-purple-900/30 hover:bg-purple-900/50 border border-purple-500/30 px-2 py-0.5 rounded text-purple-200 hover:text-white transition-colors disabled:opacity-50">
                     <Mic size={10} /> Generate Captions
                 </button>
+                <button disabled={isSelectionMode} onClick={onOpenFoundry} className="flex items-center gap-1.5 text-[10px] bg-indigo-900/30 hover:bg-indigo-900/50 border border-indigo-500/30 px-2 py-0.5 rounded text-indigo-200 hover:text-white transition-colors disabled:opacity-50">
+                    <FlaskConical size={10} /> Asset Foundry
+                </button>
            </div>
            <span className="text-[10px] text-neutral-500 font-mono">Total: {formatTime(totalDuration)}</span>
        </div>
@@ -447,37 +452,8 @@ export const Timeline: React.FC<TimelineProps> = ({
                                     const displayStart = isDraggingThis ? dragState.currentStartTime : clip.startTime;
                                     const displayDuration = isDraggingThis ? dragState.currentDuration : clip.duration;
                                     
-                                    // If dragging locally to another track, hide the original if it's not the target track, or show placeholder
-                                    // Actually, simpler: The loop iterates tracks.
-                                    // If we are dragging THIS clip, we should only render it in the track that matches `dragState.currentTrackId`?
-                                    // No, the map iterates `clips` which have `trackId` from store. 
-                                    // If we drag to a new track, `dragState.currentTrackId` changes, but the clip in `clips` still has old trackId.
-                                    // So we need to render the dragged clip ONLY if `trackId === dragState.currentTrackId` (if dragging)
-                                    // OR if `trackId === clip.trackId` (if NOT dragging or same track).
-                                    
-                                    // Logic for rendering dragged clip:
-                                    // 1. If this clip is being dragged:
-                                    //    - If current iteration trackId == dragState.currentTrackId, render it at currentStartTime.
-                                    //    - If current iteration trackId != dragState.currentTrackId, don't render (it "moved").
-                                    // 2. If this clip is NOT being dragged:
-                                    //    - Render normally.
-                                    
                                     if (isDraggingThis && trackId !== dragState.currentTrackId) return null;
                                     
-                                    // But wait, the loop iterates `trackClips` which are filtered by `clip.trackId`.
-                                    // So if I drag a clip from Track 1 to Track 2, the loop for Track 2 won't see it yet.
-                                    // AND the loop for Track 1 will still see it.
-                                    // SOLUTION: We need to render the dragged clip "portal-style" or force it visible here.
-                                    // Since we can't easily injection into another map iteration, we'll just handle visual movement within the same track for now 
-                                    // unless we move the dragged clip to a separate "Overlay" layer.
-                                    // For simplicity in this demo: We only visualize horizontal movement smoothly. Vertical track jumping will snap on mouse up.
-                                    // OR: We check `dragState` at the top level and render a "Ghost" clip.
-                                    
-                                    // Let's stick to simple horizontal smoothness + vertical snap on release for now to avoid complexity in this file.
-                                    // The `onReorder` in `App.tsx` handles the logic commit.
-                                    
-                                    // Update: The user complained about "fixed" elements. The fix is using `displayStart` derived from `dragState`.
-
                                     // Dynamic styles based on type
                                     let bgClass = '';
                                     let icon = null;

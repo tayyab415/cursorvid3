@@ -5,14 +5,13 @@ import { CanvasControls } from './components/CanvasControls';
 import { AIAssistant } from './components/sidebar/AIAssistant';
 import { Clip, ChatMessage, ToolAction, EditPlan } from './types';
 import { generateImage, generateVideo, generateSpeech } from './services/gemini';
-import { executeTool } from './services/toolRegistry';
 import { extractAudioFromVideo } from './utils/videoUtils';
 import { 
   Video, Play, Pause, Loader2, Upload, RotateCcw, RotateCw, 
   Sparkles, Scissors, Gauge, Download, Volume2, VolumeX, X, 
   Image as ImageIcon, Film, Mic, Camera, Trash2, Info, Captions, 
   Type, Bold, Italic, Underline, AlignCenter, AlignLeft, AlignRight, 
-  Check, ChevronLeft, ShieldCheck, Brain
+  Check, ChevronLeft, ShieldCheck 
 } from 'lucide-react';
 import { timelineStore } from './timeline/store';
 
@@ -22,6 +21,11 @@ import { EyesAgent } from './services/agents/eyes';
 import { BrainAgent } from './services/agents/brain';
 import { HandsAgent } from './services/agents/hands';
 import { VerifierAgent } from './services/agents/verifier';
+
+// ASSET FOUNDRY
+import { AssetFoundryModal } from './components/foundry/AssetFoundryModal';
+import { AssetPlayer } from './components/foundry/AssetPlayer';
+import { AssetConfig } from './services/assetBrain';
 
 const DEFAULT_TEXT_STYLE = {
     fontFamily: 'Plus Jakarta Sans',
@@ -43,7 +47,7 @@ const formatTime = (seconds: number) => {
     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}.${ms}`;
 };
 
-// Canvas drawing helpers
+// Canvas drawing helpers (Still used for export/vision agents, but main player now handles advanced rendering)
 const drawClipToCanvas = (
     ctx: CanvasRenderingContext2D, 
     clip: Clip, 
@@ -434,7 +438,7 @@ const GenerationApprovalModal = ({
                         {request.reasoning && (
                             <div className="bg-gradient-to-r from-blue-900/20 to-purple-900/20 border border-blue-500/20 rounded-xl p-4">
                                 <div className="flex items-center gap-2 mb-2 text-blue-300 font-bold text-xs uppercase tracking-wider">
-                                    <Brain size={12} /> Planner's Intent
+                                    <ShieldCheck size={12} /> Planner's Intent
                                 </div>
                                 <p className="text-sm text-neutral-300 leading-relaxed italic">
                                     "{request.reasoning}"
@@ -613,6 +617,8 @@ export default function App() {
   const [uploadTarget, setUploadTarget] = useState<'start'|'end'>('start');
   const [audioVoice, setAudioVoice] = useState('Kore');
   
+  const [isFoundryOpen, setIsFoundryOpen] = useState(false);
+
   // CHAT & AGENT STATE
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -654,6 +660,29 @@ export default function App() {
 
   const handleCloseMediaModal = () => {
       setMediaModalTrackId(null); setVeoStartImg(null); setVeoEndImg(null); setGenPrompt('');
+  };
+
+  const handleAssetFoundryAdd = (url: string, config: AssetConfig) => {
+    // Determine a safe track and time
+    const maxTrack = clips.length > 0 ? Math.max(...clips.map(c => c.trackId)) : 0;
+    const targetTrack = maxTrack + 1; // Always new track to be safe with blends
+    
+    // Find a spot near playhead
+    let startTime = currentTime;
+    
+    // Create Clip
+    timelineStore.addClip({
+        id: `foundry-${Date.now()}`,
+        title: config.originalPrompt.slice(0, 20),
+        type: 'video',
+        startTime: startTime,
+        duration: 5,
+        sourceStartTime: 0,
+        sourceUrl: url,
+        trackId: targetTrack,
+        strategy: config.strategy,
+        transform: { x: 0, y: 0, scale: 1, rotation: 0 }
+    });
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1189,6 +1218,8 @@ export default function App() {
           </div>
       )}
 
+      <AssetFoundryModal isOpen={isFoundryOpen} onClose={() => setIsFoundryOpen(false)} onAddAsset={handleAssetFoundryAdd} />
+
       <GenerationApprovalModal isOpen={!!pendingApproval} onClose={() => { setPendingApproval(null); setIsProcessing(false); }} onConfirm={handleApprovalConfirm} request={pendingApproval} />
       <RangeEditorModal isOpen={rangeModalOpen} onClose={() => { setRangeModalOpen(false); setIsSelectingScope(false); }} onConfirm={handleRangeConfirm} initialRange={liveScopeRange || { start: 0, end: 5 }} clips={clips} mediaRefs={mediaRefs} />
       <input type="file" multiple accept="video/*,image/*,audio/*" className="hidden" ref={fileInputRef} onChange={handleAddMedia} />
@@ -1246,7 +1277,20 @@ export default function App() {
                         }
                         if (clip.type === 'video' || clip.type === 'audio') {
                             const isAudio = clip.type === 'audio';
-                            return ( <div key={clip.id} style={{...style, display: isAudio ? 'none' : 'block'}} onClick={handleClipClick}>{isAudio ? ( <audio ref={(el) => { mediaRefs.current[clip.id] = el; }} src={clip.sourceUrl || ''} muted={false} /> ) : ( <video ref={(el) => { mediaRefs.current[clip.id] = el; }} src={clip.sourceUrl || videoUrl || ''} className="w-full h-full object-contain pointer-events-none" muted={false} playsInline crossOrigin={(!clip.sourceUrl && !videoUrl) ? undefined : "anonymous"} /> )}</div> );
+                            return ( 
+                              <div key={clip.id} style={{...style, display: isAudio ? 'none' : 'block'}} onClick={handleClipClick}>
+                                {isAudio ? ( 
+                                  <audio ref={(el) => { mediaRefs.current[clip.id] = el; }} src={clip.sourceUrl || ''} muted={false} /> 
+                                ) : ( 
+                                  <AssetPlayer 
+                                    innerRef={(el) => { mediaRefs.current[clip.id] = el; }} 
+                                    src={clip.sourceUrl || videoUrl || ''} 
+                                    strategy={clip.strategy}
+                                    className="w-full h-full"
+                                  />
+                                )}
+                              </div> 
+                            );
                         } else { return ( <div key={clip.id} style={style} onClick={handleClipClick}><img src={clip.sourceUrl || ''} alt={clip.title} className="w-full h-full object-contain pointer-events-none" /></div> ); }
                     })}
                     {!videoUrl && clips.length === 0 && ( <label className="absolute inset-0 flex flex-col items-center justify-center text-neutral-500 hover:text-neutral-300 cursor-pointer transition-colors z-20"><Video className="w-16 h-16 mb-4 opacity-20" /><p className="font-medium text-lg mb-2">Click to upload video</p><p className="text-sm opacity-50">or drag and drop here</p><input type="file" accept="video/*" className="hidden" onChange={handleFileUpload} /></label> )}
@@ -1290,7 +1334,7 @@ export default function App() {
               </div>
           </div>
           <div className="h-64 border-t border-neutral-800 bg-neutral-900/50 backdrop-blur-sm z-10 flex flex-col relative z-[90]">
-            <Timeline clips={clips} tracks={tracks} currentTime={currentTime} onSeek={handleSeek} onDelete={handleDelete} onSelect={handleSelectClip} onAddMediaRequest={(tid) => { setMediaModalTrackId(tid); setModalMode('initial'); }} onResize={handleClipResize} onReorder={handleClipReorder} onAddTrack={handleAddTrack} selectedClipIds={selectedClipIds} onTransitionRequest={() => {}} onCaptionRequest={() => setCaptionModalOpen(true)} isSelectionMode={isSelectingScope} onRangeChange={(range) => setLiveScopeRange(range)} onRangeSelected={handleRangeSelected} />
+            <Timeline clips={clips} tracks={tracks} currentTime={currentTime} onSeek={handleSeek} onDelete={handleDelete} onSelect={handleSelectClip} onAddMediaRequest={(tid) => { setMediaModalTrackId(tid); setModalMode('initial'); }} onResize={handleClipResize} onReorder={handleClipReorder} onAddTrack={handleAddTrack} selectedClipIds={selectedClipIds} onTransitionRequest={() => {}} onCaptionRequest={() => setCaptionModalOpen(true)} onOpenFoundry={() => setIsFoundryOpen(true)} isSelectionMode={isSelectingScope} onRangeChange={(range) => setLiveScopeRange(range)} onRangeSelected={handleRangeSelected} />
           </div>
         </div>
         <aside className="w-80 border-l border-neutral-800 bg-neutral-900 flex flex-col z-[150] relative">
