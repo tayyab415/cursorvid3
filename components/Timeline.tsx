@@ -1,7 +1,7 @@
 
 import React, { useRef, useEffect, useState } from 'react';
 import { Clip } from '../types';
-import { X, Plus, Image as ImageIcon, Video, Layers, GripVertical, Mic, Wand2, Captions, Check, FlaskConical } from 'lucide-react';
+import { X, Plus, Image as ImageIcon, Video, Layers, GripVertical, Mic, Wand2, Captions, Check, FlaskConical, Edit, Film } from 'lucide-react';
 
 interface TimelineProps {
   clips: Clip[];
@@ -18,6 +18,7 @@ interface TimelineProps {
   onTransitionRequest?: (clipA: Clip, clipB: Clip) => void;
   onCaptionRequest?: () => void;
   onOpenFoundry?: () => void;
+  onEditImage?: (clip: Clip) => void; // Added prop
   isSelectionMode?: boolean; 
   onRangeChange?: (range: {start: number, end: number} | null) => void; 
   onRangeSelected?: () => void; 
@@ -38,6 +39,7 @@ export const Timeline: React.FC<TimelineProps> = ({
     onTransitionRequest,
     onCaptionRequest,
     onOpenFoundry,
+    onEditImage,
     isSelectionMode = false,
     onRangeChange,
     onRangeSelected
@@ -70,7 +72,6 @@ export const Timeline: React.FC<TimelineProps> = ({
         if (container) {
             const pxPerSec = 40;
             const playheadPos = currentTime * pxPerSec;
-            const halfWidth = container.clientWidth / 2;
             // Only auto-scroll if playing, otherwise it's annoying while editing
             // Checking if current time changed significantly implies playback
             // This is a heuristic. Ideally passed via props "isPlaying".
@@ -360,61 +361,20 @@ export const Timeline: React.FC<TimelineProps> = ({
       <div className="flex-1 overflow-x-auto overflow-y-auto scroll-smooth relative">
         <div className="min-w-max relative min-h-full pb-8" ref={containerRef} onMouseDown={handleMouseDown}>
             
-            {/* SELECTION OVERLAY LAYER (SPOTLIGHT EFFECT) */}
+            {/* SELECTION OVERLAY LAYER */}
             {isSelectionMode && (
                 <div className="absolute inset-0 z-[100] pointer-events-none">
-                     {/* Left Dimmer */}
-                     <div 
-                        className="absolute top-0 bottom-0 bg-black/60 backdrop-grayscale transition-all duration-75 ease-out"
-                        style={{ left: 0, width: `${selectionStart}px` }} 
-                     />
-                     
-                     {/* Right Dimmer */}
-                     <div 
-                        className="absolute top-0 bottom-0 right-0 bg-black/60 backdrop-grayscale transition-all duration-75 ease-out"
-                        style={{ left: `${selectionEnd}px` }} 
-                     />
-
-                     {/* The Selection Highlight Box */}
+                     <div className="absolute top-0 bottom-0 bg-black/60 backdrop-grayscale transition-all duration-75 ease-out" style={{ left: 0, width: `${selectionStart}px` }} />
+                     <div className="absolute top-0 bottom-0 right-0 bg-black/60 backdrop-grayscale transition-all duration-75 ease-out" style={{ left: `${selectionEnd}px` }} />
                      {selectionDrag && (
-                         <div 
-                             className="absolute top-0 bottom-8 border-x-2 border-yellow-400 bg-yellow-400/10 shadow-[0_0_20px_rgba(250,204,21,0.2)]"
-                             style={{ left: `${selectionStart}px`, width: `${selectionWidth}px` }}
-                         >
-                            {/* Top Labels */}
-                            <div className="absolute -top-6 left-0 flex flex-col items-center -translate-x-1/2">
-                                <span className="bg-yellow-400 text-black text-[9px] font-bold px-1 rounded-sm">{startTimeStr}</span>
-                                <div className="h-2 w-px bg-yellow-400" />
-                            </div>
-                            <div className="absolute -top-6 right-0 flex flex-col items-center translate-x-1/2">
-                                <span className="bg-yellow-400 text-black text-[9px] font-bold px-1 rounded-sm">{endTimeStr}</span>
-                                <div className="h-2 w-px bg-yellow-400" />
-                            </div>
-
-                            {/* Center Label (Duration) */}
-                            {selectionWidth > 40 && (
-                                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2">
-                                    <span className="bg-black/80 text-yellow-300 border border-yellow-500/30 px-2 py-1 rounded-full text-[10px] font-mono font-bold shadow-xl backdrop-blur-sm">
-                                        {durationStr}
-                                    </span>
-                                </div>
-                            )}
-
-                            {/* Active Guide Lines (Vertical) */}
-                            <div className="absolute top-0 bottom-0 left-0 w-px bg-yellow-400 shadow-[0_0_8px_rgba(250,204,21,0.5)]" />
-                            <div className="absolute top-0 bottom-0 right-0 w-px bg-yellow-400 shadow-[0_0_8px_rgba(250,204,21,0.5)]" />
+                         <div className="absolute top-0 bottom-8 border-x-2 border-yellow-400 bg-yellow-400/10 shadow-[0_0_20px_rgba(250,204,21,0.2)]" style={{ left: `${selectionStart}px`, width: `${selectionWidth}px` }}>
+                            <div className="absolute -top-6 left-0 flex flex-col items-center -translate-x-1/2"><span className="bg-yellow-400 text-black text-[9px] font-bold px-1 rounded-sm">{startTimeStr}</span><div className="h-2 w-px bg-yellow-400" /></div>
+                            <div className="absolute -top-6 right-0 flex flex-col items-center translate-x-1/2"><span className="bg-yellow-400 text-black text-[9px] font-bold px-1 rounded-sm">{endTimeStr}</span><div className="h-2 w-px bg-yellow-400" /></div>
+                            {selectionWidth > 40 && (<div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2"><span className="bg-black/80 text-yellow-300 border border-yellow-500/30 px-2 py-1 rounded-full text-[10px] font-mono font-bold shadow-xl backdrop-blur-sm">{durationStr}</span></div>)}
+                            <div className="absolute top-0 bottom-0 left-0 w-px bg-yellow-400 shadow-[0_0_8px_rgba(250,204,21,0.5)]" /><div className="absolute top-0 bottom-0 right-0 w-px bg-yellow-400 shadow-[0_0_8px_rgba(250,204,21,0.5)]" />
                          </div>
                      )}
-                     
-                     {/* Instruction Overlay (Before dragging starts) */}
-                     {!selectionDrag && (
-                        <div className="absolute inset-0 flex items-center justify-center bg-black/40 backdrop-blur-[1px]">
-                            <div className="bg-neutral-900 border border-neutral-700 text-neutral-200 px-4 py-2 rounded-lg shadow-2xl flex items-center gap-2 animate-pulse">
-                                <div className="w-2 h-2 rounded-full bg-yellow-500" />
-                                <span className="text-xs font-medium">Click and drag to select range</span>
-                            </div>
-                        </div>
-                     )}
+                     {!selectionDrag && (<div className="absolute inset-0 flex items-center justify-center bg-black/40 backdrop-blur-[1px]"><div className="bg-neutral-900 border border-neutral-700 text-neutral-200 px-4 py-2 rounded-lg shadow-2xl flex items-center gap-2 animate-pulse"><div className="w-2 h-2 rounded-full bg-yellow-500" /><span className="text-xs font-medium">Click and drag to select range</span></div></div>)}
                 </div>
             )}
 
@@ -423,38 +383,30 @@ export const Timeline: React.FC<TimelineProps> = ({
                 <div className="absolute top-0 bottom-0 left-0 right-0 bg-red-500/20 w-px blur-[1px]" />
             </div>
 
-            {/* Snap Line */}
-            {snapLineX !== null && (
-                <div className="absolute top-0 bottom-0 w-px bg-yellow-400 z-[60] pointer-events-none shadow-[0_0_8px_rgba(250,204,21,0.8)]" style={{ left: `${snapLineX}px` }} />
-            )}
+            {snapLineX !== null && (<div className="absolute top-0 bottom-0 w-px bg-yellow-400 z-[60] pointer-events-none shadow-[0_0_8px_rgba(250,204,21,0.8)]" style={{ left: `${snapLineX}px` }} />)}
 
             <div className={`flex flex-col py-4 gap-2 transition-opacity duration-300 ${isSelectionMode ? 'opacity-100' : 'opacity-100'}`}>
                 {[...tracks].reverse().map((trackId) => {
-                    // Filter and sort clips
                     const trackClips = clips.filter(c => c.trackId === trackId).sort((a, b) => a.startTime - b.startTime);
                     const isTrackDragOver = dragOverTrackId === trackId;
                     
                     return (
                         <div key={trackId} className="relative" onMouseEnter={() => dragState?.type === 'move' && setDragOverTrackId(trackId)}>
                             <div className="absolute left-2 -top-3 text-[9px] font-bold text-neutral-600 uppercase tracking-widest pointer-events-none z-10">Track {trackId + 1}</div>
-                            <div 
-                                className={`h-24 w-full relative transition-colors ${isTrackDragOver ? 'bg-blue-900/10' : 'bg-neutral-800/20'} border-y border-neutral-800/30`}
-                                style={{ minWidth: `${(endMarker + 10) * 40}px` }}
-                            >
+                            <div className={`h-24 w-full relative transition-colors ${isTrackDragOver ? 'bg-blue-900/10' : 'bg-neutral-800/20'} border-y border-neutral-800/30`} style={{ minWidth: `${(endMarker + 10) * 40}px` }}>
                                 {trackClips.map((clip, index) => {
                                     const isDraggingThis = dragState?.clipId === clip.id;
                                     const isActive = currentTime >= clip.startTime && currentTime < (clip.startTime + clip.duration);
                                     const isSelected = selectedClipIds.includes(clip.id);
                                     const isAudio = clip.type === 'audio';
                                     const isText = clip.type === 'text';
+                                    const isImage = clip.type === 'image';
 
-                                    // If dragging, use local state for position/duration
                                     const displayStart = isDraggingThis ? dragState.currentStartTime : clip.startTime;
                                     const displayDuration = isDraggingThis ? dragState.currentDuration : clip.duration;
                                     
                                     if (isDraggingThis && trackId !== dragState.currentTrackId) return null;
                                     
-                                    // Dynamic styles based on type
                                     let bgClass = '';
                                     let icon = null;
                                     if (isAudio) {
@@ -464,12 +416,11 @@ export const Timeline: React.FC<TimelineProps> = ({
                                         bgClass = isSelected ? 'bg-emerald-500/50' : isActive ? 'bg-emerald-500/40' : 'bg-emerald-500/20 border-emerald-500/30 hover:bg-emerald-600/30';
                                         icon = <Captions size={10} className="text-emerald-300" />;
                                     } else {
-                                        // Video/Image
                                         bgClass = isSelected ? 'bg-blue-600/50' : isActive ? 'bg-blue-600/40' : 'bg-blue-600/20 border-blue-500/30 hover:bg-blue-600/30';
-                                        icon = clip.type === 'image' ? <ImageIcon size={10} className="text-purple-300" /> : <Video size={10} className="text-blue-300" />;
+                                        icon = isImage ? <ImageIcon size={10} className="text-purple-300" /> : <Video size={10} className="text-blue-300" />;
                                     }
 
-                                    // Check for transition opportunity (only if not dragging)
+                                    // Check for transition (omitted for brevity, same as previous)
                                     let transitionBtn = null;
                                     if (!isDraggingThis && !isAudio && !isText && index < trackClips.length - 1) {
                                         const nextClip = trackClips[index + 1];
@@ -478,19 +429,9 @@ export const Timeline: React.FC<TimelineProps> = ({
                                             const gap = nextClip.startTime - clipEndTime;
                                             if (gap < 0.1 && gap > -0.1) {
                                                 transitionBtn = (
-                                                    <div 
-                                                        key={`trans-${clip.id}`}
-                                                        className="absolute z-[60] top-1 bottom-1 w-6 -ml-3 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity group/trans"
-                                                        style={{ left: `${clipEndTime * 40}px` }}
-                                                        onMouseEnter={() => setHoveredGap({trackId, index})}
-                                                        onMouseLeave={() => setHoveredGap(null)}
-                                                    >
+                                                    <div key={`trans-${clip.id}`} className="absolute z-[60] top-1 bottom-1 w-6 -ml-3 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity group/trans" style={{ left: `${clipEndTime * 40}px` }} onMouseEnter={() => setHoveredGap({trackId, index})} onMouseLeave={() => setHoveredGap(null)}>
                                                          <div className="absolute inset-y-0 w-0.5 bg-purple-500/50 opacity-50 group-hover/trans:opacity-100" />
-                                                         <button
-                                                            onClick={(e) => { e.stopPropagation(); if (onTransitionRequest) onTransitionRequest(clip, nextClip); }}
-                                                            className="relative w-6 h-6 rounded-full bg-purple-600 hover:bg-purple-500 text-white flex items-center justify-center shadow-lg transform scale-90 group-hover/trans:scale-110 transition-transform z-50 border border-purple-400"
-                                                            title="Generate AI Transition with Veo"
-                                                         >
+                                                         <button onClick={(e) => { e.stopPropagation(); if (onTransitionRequest) onTransitionRequest(clip, nextClip); }} className="relative w-6 h-6 rounded-full bg-purple-600 hover:bg-purple-500 text-white flex items-center justify-center shadow-lg transform scale-90 group-hover/trans:scale-110 transition-transform z-50 border border-purple-400" title="Generate AI Transition with Veo">
                                                             <Wand2 size={12} />
                                                          </button>
                                                     </div>
@@ -505,20 +446,32 @@ export const Timeline: React.FC<TimelineProps> = ({
                                                 data-clip-body
                                                 onMouseDown={(e) => startMove(e, clip)}
                                                 className={`group absolute top-1 bottom-1 rounded-md flex flex-col justify-between p-2 transition-all duration-0 ease-linear border overflow-hidden cursor-grab active:cursor-grabbing ${bgClass} ${isSelected ? 'border-white ring-2 ring-white/50 z-20' : 'z-10'}`}
-                                                style={{ 
-                                                    left: `${displayStart * 40}px`,
-                                                    width: `${displayDuration * 40}px`,
-                                                    boxShadow: isDraggingThis ? '0 4px 12px rgba(0,0,0,0.5)' : undefined,
-                                                    opacity: isDraggingThis ? 0.9 : 1,
-                                                    zIndex: isDraggingThis ? 100 : undefined
-                                                }}
+                                                style={{ left: `${displayStart * 40}px`, width: `${displayDuration * 40}px`, boxShadow: isDraggingThis ? '0 4px 12px rgba(0,0,0,0.5)' : undefined, opacity: isDraggingThis ? 0.9 : 1, zIndex: isDraggingThis ? 100 : undefined }}
                                             >
                                                 <div data-resize-handle className="absolute left-0 top-0 bottom-0 w-3 cursor-w-resize hover:bg-white/20 z-40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity" onMouseDown={(e) => startResize(e, clip, 'start')}><div className="w-0.5 h-6 bg-white/50 rounded-full" /></div>
                                                 <div data-resize-handle className="absolute right-0 top-0 bottom-0 w-3 cursor-e-resize hover:bg-white/20 z-40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity" onMouseDown={(e) => startResize(e, clip, 'end')}><div className="w-0.5 h-6 bg-white/50 rounded-full" /></div>
+                                                
                                                 <div className="flex items-center gap-1.5 mb-1 pointer-events-none">
                                                     {icon}
                                                     <span className={`text-xs font-medium truncate ${isActive || isSelected ? 'text-white' : isText ? 'text-emerald-100' : 'text-blue-100'}`}>{clip.title}</span>
                                                 </div>
+
+                                                {/* THE ADD MOTION / EDIT BUTTON */}
+                                                {isImage && isSelected && !isDraggingThis && (
+                                                    <button
+                                                        onMouseDown={(e) => e.stopPropagation()}
+                                                        onClick={(e) => { e.stopPropagation(); if(onEditImage) onEditImage(clip); }}
+                                                        className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-green-600 hover:bg-green-500 text-white border border-green-400 shadow-lg px-3 py-1.5 rounded flex items-center gap-2 z-50 transition-transform hover:scale-105 active:scale-95"
+                                                    >
+                                                        <div className="flex flex-col items-center">
+                                                            <div className="flex items-center gap-1">
+                                                                <Edit size={10} />
+                                                                <span className="text-[10px] font-bold whitespace-nowrap">Edit / Motion</span>
+                                                            </div>
+                                                        </div>
+                                                    </button>
+                                                )}
+
                                                 <span className={`text-[10px] pointer-events-none ${isActive || isSelected ? 'text-yellow-200' : 'text-white/50'}`}>{displayDuration.toFixed(1)}s</span>
                                                 <button onClick={(e) => { e.stopPropagation(); onDelete([clip.id]); }} className="absolute top-1 right-1 p-0.5 rounded-full bg-black/40 hover:bg-red-500 text-white/70 hover:text-white opacity-0 group-hover:opacity-100 transition-all z-30"><X size={10} strokeWidth={3} /></button>
                                             </div>
@@ -534,13 +487,6 @@ export const Timeline: React.FC<TimelineProps> = ({
                         </div>
                     );
                 })}
-                
-                {/* Visual Ghost for Dragging between tracks (Optional enhancement for future) */}
-                {dragState?.type === 'move' && dragState.currentTrackId !== dragState.originalTrackId && (
-                    <div className="fixed pointer-events-none z-[200] px-2 py-1 bg-blue-600 text-white text-xs rounded shadow-lg" style={{ left: dragState.startX + 20, top: dragState.startX + 20 }}>
-                        Move to Track {dragState.currentTrackId + 1}
-                    </div>
-                )}
             </div>
             <div className="relative mt-2 h-6 border-t border-neutral-800/50 pt-1" style={{ width: `${(endMarker + 10) * 40}px` }}>
             {markers.map((time) => (

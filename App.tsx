@@ -4,16 +4,20 @@ import { Timeline } from './components/Timeline';
 import { CanvasControls } from './components/CanvasControls';
 import { AIAssistant } from './components/sidebar/AIAssistant';
 import { Clip, ChatMessage, ToolAction, EditPlan } from './types';
-import { generateImage, generateVideo, generateSpeech } from './services/gemini';
+import { generateImage, generateVideo, generateSpeech, optimizePrompt, editImage } from './services/gemini';
 import { extractAudioFromVideo } from './utils/videoUtils';
 import { 
   Video, Play, Pause, Loader2, Upload, RotateCcw, RotateCw, 
   Sparkles, Scissors, Gauge, Download, Volume2, VolumeX, X, 
   Image as ImageIcon, Film, Mic, Camera, Trash2, Info, Captions, 
   Type, Bold, Italic, Underline, AlignCenter, AlignLeft, AlignRight, 
-  Check, ChevronLeft, ShieldCheck 
+  Check, ChevronLeft, ShieldCheck, Globe, Wand2
 } from 'lucide-react';
 import { timelineStore } from './timeline/store';
+import { AssetFoundryModal } from './components/foundry/AssetFoundryModal';
+import { ImageEditorModal } from './components/ImageEditorModal';
+import { AssetConfig } from './services/assetBrain';
+import { AssetScout } from './components/scout/AssetScout';
 
 // AGENTS
 import { AgenticLoop } from './services/agents/loopRunner';
@@ -21,11 +25,6 @@ import { EyesAgent } from './services/agents/eyes';
 import { BrainAgent } from './services/agents/brain';
 import { HandsAgent } from './services/agents/hands';
 import { VerifierAgent } from './services/agents/verifier';
-
-// ASSET FOUNDRY
-import { AssetFoundryModal } from './components/foundry/AssetFoundryModal';
-import { AssetPlayer } from './components/foundry/AssetPlayer';
-import { AssetConfig } from './services/assetBrain';
 
 const DEFAULT_TEXT_STYLE = {
     fontFamily: 'Plus Jakarta Sans',
@@ -47,7 +46,7 @@ const formatTime = (seconds: number) => {
     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}.${ms}`;
 };
 
-// Canvas drawing helpers (Still used for export/vision agents, but main player now handles advanced rendering)
+// Canvas drawing helpers
 const drawClipToCanvas = (
     ctx: CanvasRenderingContext2D, 
     clip: Clip, 
@@ -380,7 +379,7 @@ const GenerationApprovalModal = ({
     isOpen: boolean, 
     onClose: () => void, 
     onConfirm: (params: any) => void, 
-    request: { tool: string, params: any, reasoning?: string } | null 
+    request: { tool: string, params: any } | null 
 }) => {
     if (!isOpen || !request) return null;
 
@@ -433,19 +432,6 @@ const GenerationApprovalModal = ({
                 
                 <div className="flex-1 p-6 overflow-y-auto bg-neutral-950/50">
                     <div className="max-w-xl mx-auto space-y-6">
-                        
-                        {/* Reasoning Block */}
-                        {request.reasoning && (
-                            <div className="bg-gradient-to-r from-blue-900/20 to-purple-900/20 border border-blue-500/20 rounded-xl p-4">
-                                <div className="flex items-center gap-2 mb-2 text-blue-300 font-bold text-xs uppercase tracking-wider">
-                                    <ShieldCheck size={12} /> Planner's Intent
-                                </div>
-                                <p className="text-sm text-neutral-300 leading-relaxed italic">
-                                    "{request.reasoning}"
-                                </p>
-                            </div>
-                        )}
-
                         {/* Common: Prompt / Text */}
                         <div>
                             <label className="block text-sm font-medium text-neutral-400 mb-2">
@@ -532,6 +518,7 @@ const GenerationApprovalModal = ({
                     </div>
                 </div>
 
+                {/* Footer */}
                 <div className="p-4 border-t border-neutral-800 bg-neutral-950 flex justify-end gap-3">
                     <button onClick={onClose} className="px-4 py-2 text-xs font-bold text-neutral-400 hover:text-white transition-colors">Cancel</button>
                     <button onClick={() => onConfirm(params)} className="flex items-center gap-2 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 text-white px-6 py-2 rounded-lg font-medium text-sm transition-all shadow-lg shadow-purple-900/20">
@@ -554,6 +541,8 @@ const getSafeTrackId = (preferredTrack: number, clips: Clip[]): number => {
 export default function App() {
   const [tracks, setTracks] = useState<number[]>([0, 1, 2, 3]);
   const [clips, setClips] = useState<Clip[]>(timelineStore.getClips());
+  const [foundryOpen, setFoundryOpen] = useState(false);
+  const [imageEditorClip, setImageEditorClip] = useState<Clip | null>(null);
   
   useEffect(() => { return timelineStore.subscribe(setClips); }, []);
   useEffect(() => {
@@ -595,7 +584,7 @@ export default function App() {
 
   const [mediaModalTrackId, setMediaModalTrackId] = useState<number | null>(null);
   const [modalMode, setModalMode] = useState<'initial' | 'generate'>('initial');
-  const [genTab, setGenTab] = useState<'image' | 'video' | 'audio'>('image');
+  const [genTab, setGenTab] = useState<'image' | 'video' | 'audio' | 'scout'>('image');
   
   const [captionModalOpen, setCaptionModalOpen] = useState(false);
   const [isSelectingScope, setIsSelectingScope] = useState(false);
@@ -604,6 +593,7 @@ export default function App() {
   const [executionStatus, setExecutionStatus] = useState<string | null>(null);
 
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isOptimizing, setIsOptimizing] = useState(false);
   const [genPrompt, setGenPrompt] = useState('');
   const [imgModel, setImgModel] = useState('gemini-2.5-flash-image');
   const [imgAspect, setImgAspect] = useState('16:9');
@@ -617,15 +607,13 @@ export default function App() {
   const [uploadTarget, setUploadTarget] = useState<'start'|'end'>('start');
   const [audioVoice, setAudioVoice] = useState('Kore');
   
-  const [isFoundryOpen, setIsFoundryOpen] = useState(false);
-
   // CHAT & AGENT STATE
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   
   const [activePlan, setActivePlan] = useState<EditPlan | null>(null);
   const [currentStepIndex, setCurrentStepIndex] = useState(0);
-  const [pendingApproval, setPendingApproval] = useState<{ tool: string, params: any, reasoning?: string } | null>(null);
+  const [pendingApproval, setPendingApproval] = useState<{ tool: string, params: any } | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null); 
   const canvasRef = useRef<HTMLCanvasElement>(null); 
@@ -654,14 +642,6 @@ export default function App() {
   // HANDLERS (DEFINED EARLY TO AVOID REFERENCE ERRORS)
   // ----------------------------------------------------------------------
 
-  const triggerLocalUpload = () => {
-      fileInputRef.current?.click();
-  };
-
-  const handleCloseMediaModal = () => {
-      setMediaModalTrackId(null); setVeoStartImg(null); setVeoEndImg(null); setGenPrompt('');
-  };
-
   const handleAssetFoundryAdd = (url: string, config: AssetConfig) => {
     // Determine a safe track and time
     const maxTrack = clips.length > 0 ? Math.max(...clips.map(c => c.trackId)) : 0;
@@ -683,6 +663,79 @@ export default function App() {
         strategy: config.strategy,
         transform: { x: 0, y: 0, scale: 1, rotation: 0 }
     });
+
+    // SYNC WITH CHAT: Log this action so the Agent Loop knows about it
+    setChatHistory(prev => [...prev, {
+        role: 'system',
+        text: `✨ Asset Foundry Action: Created "${config.originalPrompt}" using '${config.strategy}' strategy.`
+    }]);
+  };
+
+  const handleScoutAssetFound = (url: string, description: string) => {
+    // Determine a safe track and time
+    const maxTrack = clips.length > 0 ? Math.max(...clips.map(c => c.trackId)) : 0;
+    const targetTrack = maxTrack + 1; 
+    
+    const trackId = mediaModalTrackId !== null ? mediaModalTrackId : targetTrack;
+    
+    // Find a spot near playhead if general add, or end of track if specific track
+    const trackClips = clips.filter(c => c.trackId === trackId);
+    let startTime = trackClips.length > 0 ? Math.max(...trackClips.map(c => c.startTime + c.duration)) : 0;
+    
+    timelineStore.addClip({
+        id: `scout-${Date.now()}`,
+        title: `Found: ${description.slice(0, 15)}...`,
+        type: 'video',
+        startTime: startTime,
+        duration: 4, // Veo default
+        sourceStartTime: 0,
+        sourceUrl: url,
+        trackId: trackId,
+        transform: { x: 0, y: 0, scale: 1, rotation: 0 }
+    });
+
+    setChatHistory(prev => [...prev, {
+        role: 'system',
+        text: `🌐 Asset Scout: Found and added "${description}".`
+    }]);
+
+    handleCloseMediaModal();
+  };
+
+  const handleAddEditedAsset = (url: string, type: 'image' | 'video', title: string) => {
+      // Add the edited asset to the timeline, ideally replacing or placed after the original
+      // For now, let's place it on a new track above at the same start time
+      const maxTrack = clips.length > 0 ? Math.max(...clips.map(c => c.trackId)) : 0;
+      const targetTrack = maxTrack + 1;
+      const originalClip = imageEditorClip; // The clip being edited
+      
+      const startTime = originalClip ? originalClip.startTime : currentTime;
+      const duration = type === 'video' ? 4 : 5;
+
+      timelineStore.addClip({
+          id: `edit-${Date.now()}`,
+          title: title,
+          type: type,
+          startTime: startTime,
+          duration: duration,
+          sourceStartTime: 0,
+          sourceUrl: url,
+          trackId: targetTrack,
+          transform: { x: 0, y: 0, scale: 1, rotation: 0 }
+      });
+
+      setChatHistory(prev => [...prev, {
+          role: 'system',
+          text: `🎨 Added new asset: "${title}"`
+      }]);
+  };
+
+  const triggerLocalUpload = () => {
+      fileInputRef.current?.click();
+  };
+
+  const handleCloseMediaModal = () => {
+      setMediaModalTrackId(null); setVeoStartImg(null); setVeoEndImg(null); setGenPrompt('');
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -737,6 +790,29 @@ export default function App() {
   };
 
   const handleAddMedia = handleFileUpload; // ALIAS FOR JSX
+
+  const handleOptimizePrompt = async () => {
+      if (!genPrompt.trim()) return;
+      setIsOptimizing(true);
+      try {
+          let type: 'imagen' | 'veo' | 'nano_banana' = 'nano_banana';
+          if (genTab === 'video') {
+              type = 'veo';
+          } else if (genTab === 'image') {
+              if (imgModel.includes('imagen')) {
+                  type = 'imagen';
+              } else {
+                  type = 'nano_banana';
+              }
+          }
+          const optimized = await optimizePrompt(genPrompt, type);
+          setGenPrompt(optimized);
+      } catch (e) {
+          console.error("Optimization failed", e);
+      } finally {
+          setIsOptimizing(false);
+      }
+  };
 
   const handleGenerate = async () => {
       if (mediaModalTrackId === null) return;
@@ -1218,9 +1294,13 @@ export default function App() {
           </div>
       )}
 
-      <AssetFoundryModal isOpen={isFoundryOpen} onClose={() => setIsFoundryOpen(false)} onAddAsset={handleAssetFoundryAdd} />
-
       <GenerationApprovalModal isOpen={!!pendingApproval} onClose={() => { setPendingApproval(null); setIsProcessing(false); }} onConfirm={handleApprovalConfirm} request={pendingApproval} />
+      <ImageEditorModal 
+          isOpen={!!imageEditorClip}
+          onClose={() => setImageEditorClip(null)}
+          clip={imageEditorClip}
+          onAddResult={handleAddEditedAsset}
+      />
       <RangeEditorModal isOpen={rangeModalOpen} onClose={() => { setRangeModalOpen(false); setIsSelectingScope(false); }} onConfirm={handleRangeConfirm} initialRange={liveScopeRange || { start: 0, end: 5 }} clips={clips} mediaRefs={mediaRefs} />
       <input type="file" multiple accept="video/*,image/*,audio/*" className="hidden" ref={fileInputRef} onChange={handleAddMedia} />
       <input type="file" accept="image/*" className="hidden" ref={referenceImageInputRef} onChange={handleReferenceImageFileChange} />
@@ -1242,7 +1322,92 @@ export default function App() {
           </div>
       )}
       
-      {mediaModalTrackId !== null && ( <div className="fixed inset-0 z-[500] flex items-center justify-center p-4"><div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={handleCloseMediaModal} /><div className="relative w-full max-w-2xl bg-neutral-900 border border-neutral-800 rounded-2xl shadow-2xl p-0 overflow-hidden animate-in fade-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]"><div className="p-4 border-b border-neutral-800 flex items-center justify-between"><h3 className="text-lg font-semibold text-white">Add Media to Track {mediaModalTrackId + 1}</h3><button onClick={handleCloseMediaModal} className="p-2 hover:bg-neutral-800 rounded-full text-neutral-400 hover:text-white transition-colors"><X className="w-5 h-5" /></button></div>{modalMode === 'initial' ? (<div className="p-8 grid grid-cols-2 gap-6"><button onClick={triggerLocalUpload} className="flex flex-col items-center justify-center gap-4 p-12 rounded-xl bg-neutral-800/50 border border-neutral-700 hover:border-blue-500/50 hover:bg-neutral-800 transition-all group"><div className="w-16 h-16 rounded-full bg-neutral-700 group-hover:bg-blue-600 flex items-center justify-center transition-colors shadow-lg"><Upload className="w-8 h-8 text-neutral-300 group-hover:text-white" /></div><div className="text-center"><p className="text-lg font-medium text-white mb-1">Upload Files</p><p className="text-sm text-neutral-400">Select multiple items</p></div></button><button onClick={() => setModalMode('generate')} className="flex flex-col items-center justify-center gap-4 p-12 rounded-xl bg-neutral-800/50 border border-neutral-700 hover:border-purple-500/50 hover:bg-neutral-800 transition-all group relative overflow-hidden"><div className="absolute inset-0 bg-gradient-to-br from-purple-500/10 to-blue-500/10 opacity-0 group-hover:opacity-100 transition-opacity" /><div className="w-16 h-16 rounded-full bg-neutral-700 group-hover:bg-purple-600 flex items-center justify-center transition-colors shadow-lg relative z-10"><GeminiLogo className="w-8 h-8" /></div><div className="text-center relative z-10"><p className="text-lg font-medium text-white mb-1">Generate with Gemini</p><p className="text-sm text-neutral-400">Image, Video, or Speech</p></div></button></div>) : (<div className="flex flex-1 min-h-0"><div className="w-48 border-r border-neutral-800 bg-neutral-900 p-2 space-y-1"><button onClick={() => setModalMode('initial')} className="flex items-center gap-2 w-full p-2 text-neutral-400 hover:text-white mb-4 transition-colors"><ChevronLeft className="w-4 h-4" /> Back</button>{[{ id: 'image', icon: ImageIcon, label: 'Image' },{ id: 'video', icon: Film, label: 'Video (Veo)' },{ id: 'audio', icon: Mic, label: 'Speech (TTS)' }].map(tab => (<button key={tab.id} onClick={() => setGenTab(tab.id as any)} className={`flex items-center gap-3 w-full p-3 rounded-lg text-sm font-medium transition-all ${genTab === tab.id ? 'bg-purple-600/20 text-purple-300' : 'text-neutral-400 hover:bg-neutral-800 hover:text-white'}`}><tab.icon className="w-4 h-4" /> {tab.label}</button>))}</div><div className="flex-1 p-6 overflow-y-auto bg-neutral-950/50"><div className="max-w-xl mx-auto space-y-6"><div><label className="block text-sm font-medium text-neutral-400 mb-2">{genTab === 'audio' ? 'Text to Speak' : 'Prompt'}</label><textarea value={genPrompt} onChange={(e) => setGenPrompt(e.target.value)} placeholder={genTab === 'audio' ? "Enter text..." : "Describe what you want to generate..."} className="w-full h-24 bg-neutral-900 border border-neutral-700 rounded-xl p-3 text-sm focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 resize-none transition-all" autoFocus /></div>{genTab === 'video' && (<div className="space-y-4 pt-2 border-t border-neutral-800"><div className="flex items-center justify-between mb-2"><span className="text-sm font-medium text-neutral-300">Reference Images</span><span className={`text-xs font-medium px-2 py-0.5 rounded-full bg-neutral-800 border border-neutral-700 ${veoModeColor}`}>{veoModeLabel}</span></div><div className="grid grid-cols-2 gap-4"><div className="space-y-2"><div className="flex items-center justify-between"><label className="text-xs font-medium text-neutral-500">Start Frame (Optional)</label>{veoStartImg && <button onClick={() => setVeoStartImg(null)} className="text-xs text-red-400 hover:text-red-300"><Trash2 className="w-3 h-3" /></button>}</div><div className="relative aspect-video bg-neutral-900 border border-neutral-700 rounded-lg overflow-hidden group hover:border-blue-500/50 transition-colors">{veoStartImg ? (<img src={veoStartImg} className="w-full h-full object-cover" alt="Start Frame" />) : (<div className="absolute inset-0 flex flex-col items-center justify-center gap-2"><button onClick={() => handleCaptureFrame('start')} className="flex items-center gap-1.5 px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700 rounded text-xs text-neutral-300 transition-colors"><Camera className="w-3 h-3" /> Timeline</button><button onClick={() => handleVeoReferenceUpload('start')} className="flex items-center gap-1.5 px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700 rounded text-xs text-neutral-300 transition-colors"><Upload className="w-3 h-3" /> Upload</button></div>)}</div><p className="text-[10px] text-neutral-600">Tip: Position playhead to capture specific timeline frame.</p></div><div className="space-y-2"><div className="flex items-center justify-between"><label className={`text-xs font-medium ${!veoStartImg ? 'text-neutral-700' : 'text-neutral-500'}`}>End Frame (Requires Start Frame)</label>{veoEndImg && <button onClick={() => setVeoEndImg(null)} className="text-xs text-red-400 hover:text-red-300"><Trash2 className="w-3 h-3" /></button>}</div><div className={`relative aspect-video bg-neutral-900 border rounded-lg overflow-hidden group transition-colors ${!veoStartImg ? 'border-neutral-800 opacity-50 pointer-events-none' : 'border-neutral-700 hover:border-purple-500/50'}`}>{veoEndImg ? (<img src={veoEndImg} className="w-full h-full object-cover" alt="End Frame" />) : (<div className="absolute inset-0 flex flex-col items-center justify-center gap-2"><button onClick={() => handleCaptureFrame('end')} className="flex items-center gap-1.5 px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700 rounded text-xs text-neutral-300 transition-colors"><Camera className="w-3 h-3" /> Timeline</button><button onClick={() => handleVeoReferenceUpload('end')} className="flex items-center gap-1.5 px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700 rounded text-xs text-neutral-300 transition-colors"><Upload className="w-3 h-3" /> Upload</button></div>)}</div></div></div></div>)}{genTab === 'image' && (<div className="grid grid-cols-2 gap-4"><div><label className="block text-xs font-medium text-neutral-500 mb-1">Model</label><select value={imgModel} onChange={(e) => setImgModel(e.target.value as any)} className="w-full bg-neutral-900 border border-neutral-700 rounded-lg p-2 text-sm focus:outline-none focus:border-purple-500"><option value="gemini-2.5-flash-image">Fast (Flash)</option><option value="gemini-3-pro-image-preview">High Quality (Pro)</option></select></div><div><label className="block text-xs font-medium text-neutral-500 mb-1">Aspect Ratio</label><select value={imgAspect} onChange={(e) => setImgAspect(e.target.value)} className="w-full bg-neutral-900 border border-neutral-700 rounded-lg p-2 text-sm focus:outline-none focus:border-purple-500"><option value="16:9">16:9 (Landscape)</option><option value="9:16">9:16 (Portrait)</option><option value="1:1">1:1 (Square)</option></select></div></div>)}{genTab === 'video' && (<div className="grid grid-cols-2 gap-4"><div className="col-span-2 grid grid-cols-2 gap-4"><div><label className="block text-xs font-medium text-neutral-500 mb-1">Model</label><select value={vidModel} onChange={(e) => setVidModel(e.target.value as any)} className="w-full bg-neutral-900 border border-neutral-700 rounded-lg p-2 text-sm focus:outline-none focus:border-purple-500"><option value="veo-3.1-fast-generate-preview">Veo 3.1 Fast</option><option value="veo-3.1-generate-preview">Veo 3.1 Quality</option><option value="veo-3.0-fast-generate-preview">Veo 3 Fast</option><option value="veo-3.0-generate-preview">Veo 3 Quality</option></select></div><div><label className="block text-xs font-medium text-neutral-500 mb-1">Resolution</label><select value={vidResolution} onChange={(e) => setVidResolution(e.target.value as any)} className="w-full bg-neutral-900 border border-neutral-700 rounded-lg p-2 text-sm focus:outline-none focus:border-purple-500"><option value="720p">720p</option><option value="1080p">1080p (8s only)</option><option value="4k">4k (8s only)</option></select></div><div><label className="block text-xs font-medium text-neutral-500 mb-1">Duration</label><select value={vidDuration} onChange={(e) => setVidDuration(e.target.value as any)} disabled={vidResolution === '1080p' || vidResolution === '4k' || !!veoStartImg || !!veoEndImg} className={`w-full bg-neutral-900 border border-neutral-700 rounded-lg p-2 text-sm focus:outline-none focus:border-purple-500 ${vidResolution === '1080p' || vidResolution === '4k' || !!veoStartImg || !!veoEndImg ? 'opacity-50 cursor-not-allowed bg-neutral-800' : ''}`}><option value="4">4s</option><option value="8">8s</option></select></div><div><label className="block text-xs font-medium text-neutral-500 mb-1">Aspect Ratio</label><select value={vidAspect} onChange={(e) => setVidAspect(e.target.value)} className="w-full bg-neutral-900 border border-neutral-700 rounded-lg p-2 text-sm focus:outline-none focus:border-purple-500"><option value="16:9">16:9 (Landscape)</option><option value="9:16">9:16 (Portrait)</option></select></div></div><div className="col-span-2 p-3 bg-blue-900/20 border border-blue-500/20 rounded-lg flex items-start gap-2"><Info className="w-4 h-4 text-blue-400 mt-0.5 shrink-0" /><span className="text-xs text-blue-300 leading-relaxed">Video generation takes 1-2 minutes. A paid billing project is required.<br/><strong>Note:</strong> 1080p, 4K, and Image-to-Video operations are locked to 8s duration.</span></div></div>)}{genTab === 'audio' && (<div><label className="block text-xs font-medium text-neutral-500 mb-1">Voice</label><div className="grid grid-cols-5 gap-2">{['Kore', 'Puck', 'Charon', 'Fenrir', 'Zephyr'].map(voice => (<button key={voice} onClick={() => setAudioVoice(voice)} className={`p-2 rounded border text-xs font-medium transition-all ${audioVoice === voice ? 'bg-purple-600 border-purple-500 text-white' : 'bg-neutral-800 border-neutral-700 text-neutral-400 hover:border-neutral-600'}`}>{voice}</button>))}</div></div>)}<div className="flex justify-end pt-4"><button onClick={handleGenerate} disabled={isGenerating || (genTab !== 'video' && !genPrompt.trim()) || (genTab === 'video' && !genPrompt.trim() && !veoStartImg)} className="flex items-center gap-2 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 text-white px-8 py-3 rounded-lg font-medium text-sm transition-all disabled:opacity-50 shadow-lg shadow-purple-900/20 w-full justify-center">{isGenerating ? (<><Loader2 className="w-5 h-5 animate-spin" />{genTab === 'video' ? 'Generating Video...' : 'Generating...'}</>) : (<><Sparkles className="w-5 h-5" />Generate {genTab.charAt(0).toUpperCase() + genTab.slice(1)}</>)}</button></div></div></div></div>)}</div></div>)}
+      {mediaModalTrackId !== null && ( 
+        <div className="fixed inset-0 z-[500] flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={handleCloseMediaModal} />
+            <div className="relative w-full max-w-2xl bg-neutral-900 border border-neutral-800 rounded-2xl shadow-2xl p-0 overflow-hidden animate-in fade-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]">
+                <div className="p-4 border-b border-neutral-800 flex items-center justify-between">
+                    <h3 className="text-lg font-semibold text-white">Add Media to Track {mediaModalTrackId + 1}</h3>
+                    <button onClick={handleCloseMediaModal} className="p-2 hover:bg-neutral-800 rounded-full text-neutral-400 hover:text-white transition-colors">
+                        <X className="w-5 h-5" />
+                    </button>
+                </div>
+                
+                {modalMode === 'initial' ? (
+                    <div className="p-8 grid grid-cols-2 gap-6">
+                        <button onClick={triggerLocalUpload} className="flex flex-col items-center justify-center gap-4 p-12 rounded-xl bg-neutral-800/50 border border-neutral-700 hover:border-blue-500/50 hover:bg-neutral-800 transition-all group">
+                            <div className="w-16 h-16 rounded-full bg-neutral-700 group-hover:bg-blue-600 flex items-center justify-center transition-colors shadow-lg">
+                                <Upload className="w-8 h-8 text-neutral-300 group-hover:text-white" />
+                            </div>
+                            <div className="text-center">
+                                <p className="text-lg font-medium text-white mb-1">Upload Files</p>
+                                <p className="text-sm text-neutral-400">Select multiple items</p>
+                            </div>
+                        </button>
+                        <button onClick={() => setModalMode('generate')} className="flex flex-col items-center justify-center gap-4 p-12 rounded-xl bg-neutral-800/50 border border-neutral-700 hover:border-purple-500/50 hover:bg-neutral-800 transition-all group relative overflow-hidden">
+                            <div className="absolute inset-0 bg-gradient-to-br from-purple-500/10 to-blue-500/10 opacity-0 group-hover:opacity-100 transition-opacity" />
+                            <div className="w-16 h-16 rounded-full bg-neutral-700 group-hover:bg-purple-600 flex items-center justify-center transition-colors shadow-lg relative z-10">
+                                <GeminiLogo className="w-8 h-8" />
+                            </div>
+                            <div className="text-center relative z-10">
+                                <p className="text-lg font-medium text-white mb-1">Generate with Gemini</p>
+                                <p className="text-sm text-neutral-400">Image, Video, or Speech</p>
+                            </div>
+                        </button>
+                    </div>
+                ) : (
+                    <div className="flex flex-1 min-h-0">
+                        {/* Sidebar Navigation for Modal */}
+                        <div className="w-48 border-r border-neutral-800 bg-neutral-900 p-2 space-y-1">
+                            <button onClick={() => setModalMode('initial')} className="flex items-center gap-2 w-full p-2 text-neutral-400 hover:text-white mb-4 transition-colors">
+                                <ChevronLeft className="w-4 h-4" /> Back
+                            </button>
+                            {[
+                                { id: 'image', icon: ImageIcon, label: 'Image' },
+                                { id: 'video', icon: Film, label: 'Video (Veo)' },
+                                { id: 'audio', icon: Mic, label: 'Speech (TTS)' },
+                                { id: 'scout', icon: Globe, label: 'Asset Scout' }
+                            ].map(tab => (
+                                <button key={tab.id} onClick={() => setGenTab(tab.id as any)} className={`flex items-center gap-3 w-full p-3 rounded-lg text-sm font-medium transition-all ${genTab === tab.id ? 'bg-purple-600/20 text-purple-300' : 'text-neutral-400 hover:bg-neutral-800 hover:text-white'}`}>
+                                    <tab.icon className="w-4 h-4" /> {tab.label}
+                                </button>
+                            ))}
+                        </div>
+
+                        {/* Modal Content */}
+                        <div className="flex-1 overflow-hidden bg-neutral-950/50 flex flex-col">
+                            {genTab === 'scout' ? (
+                                <div className="h-full">
+                                    <AssetScout onAssetFound={handleScoutAssetFound} />
+                                </div>
+                            ) : (
+                                // EXISTING GENERATION UI
+                                <div className="p-6 h-full overflow-y-auto">
+                                    <div className="max-w-xl mx-auto space-y-6">
+                                        <div>
+                                            <div className="flex items-center justify-between mb-2">
+                                                <label className="block text-sm font-medium text-neutral-400">{genTab === 'audio' ? 'Text to Speak' : 'Prompt'}</label>
+                                                {(genTab === 'video' || genTab === 'image') && (
+                                                    <button 
+                                                        onClick={handleOptimizePrompt}
+                                                        disabled={isOptimizing || !genPrompt.trim()}
+                                                        className="flex items-center gap-1.5 text-[10px] text-purple-300 bg-purple-900/30 hover:bg-purple-900/50 border border-purple-500/30 px-2 py-1 rounded transition-colors disabled:opacity-50"
+                                                    >
+                                                        {isOptimizing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Wand2 className="w-3 h-3" />}
+                                                        Optimize Prompt (Gemini)
+                                                    </button>
+                                                )}
+                                            </div>
+                                            <textarea value={genPrompt} onChange={(e) => setGenPrompt(e.target.value)} placeholder={genTab === 'audio' ? "Enter text..." : "Describe what you want to generate..."} className="w-full h-24 bg-neutral-900 border border-neutral-700 rounded-xl p-3 text-sm focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 resize-none transition-all" autoFocus />
+                                        </div>
+                                        {genTab === 'video' && (<div className="space-y-4 pt-2 border-t border-neutral-800"><div className="flex items-center justify-between mb-2"><span className="text-sm font-medium text-neutral-300">Reference Images</span><span className={`text-xs font-medium px-2 py-0.5 rounded-full bg-neutral-800 border border-neutral-700 ${veoModeColor}`}>{veoModeLabel}</span></div><div className="grid grid-cols-2 gap-4"><div className="space-y-2"><div className="flex items-center justify-between"><label className="text-xs font-medium text-neutral-500">Start Frame (Optional)</label>{veoStartImg && <button onClick={() => setVeoStartImg(null)} className="text-xs text-red-400 hover:text-red-300"><Trash2 className="w-3 h-3" /></button>}</div><div className="relative aspect-video bg-neutral-900 border border-neutral-700 rounded-lg overflow-hidden group hover:border-blue-500/50 transition-colors">{veoStartImg ? (<img src={veoStartImg} className="w-full h-full object-cover" alt="Start Frame" />) : (<div className="absolute inset-0 flex flex-col items-center justify-center gap-2"><button onClick={() => handleCaptureFrame('start')} className="flex items-center gap-1.5 px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700 rounded text-xs text-neutral-300 transition-colors"><Camera className="w-3 h-3" /> Timeline</button><button onClick={() => handleVeoReferenceUpload('start')} className="flex items-center gap-1.5 px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700 rounded text-xs text-neutral-300 transition-colors"><Upload className="w-3 h-3" /> Upload</button></div>)}</div><p className="text-[10px] text-neutral-600">Tip: Position playhead to capture specific timeline frame.</p></div><div className="space-y-2"><div className="flex items-center justify-between"><label className={`text-xs font-medium ${!veoStartImg ? 'text-neutral-700' : 'text-neutral-500'}`}>End Frame (Requires Start Frame)</label>{veoEndImg && <button onClick={() => setVeoEndImg(null)} className="text-xs text-red-400 hover:text-red-300"><Trash2 className="w-3 h-3" /></button>}</div><div className={`relative aspect-video bg-neutral-900 border rounded-lg overflow-hidden group transition-colors ${!veoStartImg ? 'border-neutral-800 opacity-50 pointer-events-none' : 'border-neutral-700 hover:border-purple-500/50'}`}>{veoEndImg ? (<img src={veoEndImg} className="w-full h-full object-cover" alt="End Frame" />) : (<div className="absolute inset-0 flex flex-col items-center justify-center gap-2"><button onClick={() => handleCaptureFrame('end')} className="flex items-center gap-1.5 px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700 rounded text-xs text-neutral-300 transition-colors"><Camera className="w-3 h-3" /> Timeline</button><button onClick={() => handleVeoReferenceUpload('end')} className="flex items-center gap-1.5 px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700 rounded text-xs text-neutral-300 transition-colors"><Upload className="w-3 h-3" /> Upload</button></div>)}</div></div></div></div>)}{genTab === 'image' && (<div className="grid grid-cols-2 gap-4"><div><label className="block text-xs font-medium text-neutral-500 mb-1">Model</label><select value={imgModel} onChange={(e) => setImgModel(e.target.value as any)} className="w-full bg-neutral-900 border border-neutral-700 rounded-lg p-2 text-sm focus:outline-none focus:border-purple-500"><option value="gemini-2.5-flash-image">Fast (Flash)</option><option value="gemini-3-pro-image-preview">High Quality (Pro)</option><option value="imagen-4.0-fast-generate-001">Imagen 4 Fast</option><option value="imagen-4.0-generate-001">Imagen 4</option><option value="imagen-4.0-ultra-generate-001">Imagen 4 Ultra</option></select></div><div><label className="block text-xs font-medium text-neutral-500 mb-1">Aspect Ratio</label><select value={imgAspect} onChange={(e) => setImgAspect(e.target.value)} className="w-full bg-neutral-900 border border-neutral-700 rounded-lg p-2 text-sm focus:outline-none focus:border-purple-500"><option value="16:9">16:9 (Landscape)</option><option value="9:16">9:16 (Portrait)</option><option value="1:1">1:1 (Square)</option></select></div></div>)}{genTab === 'video' && (<div className="grid grid-cols-2 gap-4"><div className="col-span-2 grid grid-cols-2 gap-4"><div><label className="block text-xs font-medium text-neutral-500 mb-1">Model</label><select value={vidModel} onChange={(e) => setVidModel(e.target.value as any)} className="w-full bg-neutral-900 border border-neutral-700 rounded-lg p-2 text-sm focus:outline-none focus:border-purple-500"><option value="veo-3.1-fast-generate-preview">Veo 3.1 Fast</option><option value="veo-3.1-generate-preview">Veo 3.1 Quality</option><option value="veo-3.0-fast-generate-preview">Veo 3 Fast</option><option value="veo-3.0-generate-preview">Veo 3 Quality</option></select></div><div><label className="block text-xs font-medium text-neutral-500 mb-1">Resolution</label><select value={vidResolution} onChange={(e) => setVidResolution(e.target.value as any)} className="w-full bg-neutral-900 border border-neutral-700 rounded-lg p-2 text-sm focus:outline-none focus:border-purple-500"><option value="720p">720p</option><option value="1080p">1080p (8s only)</option><option value="4k">4k (8s only)</option></select></div><div><label className="block text-xs font-medium text-neutral-500 mb-1">Duration</label><select value={vidDuration} onChange={(e) => setVidDuration(e.target.value as any)} disabled={vidResolution === '1080p' || vidResolution === '4k' || !!veoStartImg || !!veoEndImg} className={`w-full bg-neutral-900 border border-neutral-700 rounded-lg p-2 text-sm focus:outline-none focus:border-purple-500 ${vidResolution === '1080p' || vidResolution === '4k' || !!veoStartImg || !!veoEndImg ? 'opacity-50 cursor-not-allowed bg-neutral-800' : ''}`}><option value="4">4s</option><option value="8">8s</option></select></div><div><label className="block text-xs font-medium text-neutral-500 mb-1">Aspect Ratio</label><select value={vidAspect} onChange={(e) => setVidAspect(e.target.value)} className="w-full bg-neutral-900 border border-neutral-700 rounded-lg p-2 text-sm focus:outline-none focus:border-purple-500"><option value="16:9">16:9 (Landscape)</option><option value="9:16">9:16 (Portrait)</option></select></div></div><div className="col-span-2 p-3 bg-blue-900/20 border border-blue-500/20 rounded-lg flex items-start gap-2"><Info className="w-4 h-4 text-blue-400 mt-0.5 shrink-0" /><span className="text-xs text-blue-300 leading-relaxed">Video generation takes 1-2 minutes. A paid billing project is required.<br/><strong>Note:</strong> 1080p, 4K, and Image-to-Video operations are locked to 8s duration.</span></div></div>)}{genTab === 'audio' && (<div><label className="block text-xs font-medium text-neutral-500 mb-1">Voice</label><div className="grid grid-cols-5 gap-2">{['Kore', 'Puck', 'Charon', 'Fenrir', 'Zephyr'].map(voice => (<button key={voice} onClick={() => setAudioVoice(voice)} className={`p-2 rounded border text-xs font-medium transition-all ${audioVoice === voice ? 'bg-purple-600 border-purple-500 text-white' : 'bg-neutral-800 border-neutral-700 text-neutral-400 hover:border-neutral-600'}`}>{voice}</button>))}</div></div>)}<div className="flex justify-end pt-4"><button onClick={handleGenerate} disabled={isGenerating || (genTab !== 'video' && !genPrompt.trim()) || (genTab === 'video' && !genPrompt.trim() && !veoStartImg)} className="flex items-center gap-2 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 text-white px-8 py-3 rounded-lg font-medium text-sm transition-all disabled:opacity-50 shadow-lg shadow-purple-900/20 w-full justify-center">{isGenerating ? (<><Loader2 className="w-5 h-5 animate-spin" />{genTab === 'video' ? 'Generating Video...' : 'Generating...'}</>) : (<><Sparkles className="w-5 h-5" />Generate {genTab.charAt(0).toUpperCase() + genTab.slice(1)}</>)}</button></div></div></div>
+                            )}
+                        </div>
+                    </div>
+                )}
+            </div>
+        </div>
+      )}
 
       <header className="h-14 border-b border-neutral-800 flex items-center px-4 justify-between bg-neutral-900/50 backdrop-blur-sm z-10 relative z-[100]">
         <div className="flex items-center gap-2">
@@ -1277,20 +1442,7 @@ export default function App() {
                         }
                         if (clip.type === 'video' || clip.type === 'audio') {
                             const isAudio = clip.type === 'audio';
-                            return ( 
-                              <div key={clip.id} style={{...style, display: isAudio ? 'none' : 'block'}} onClick={handleClipClick}>
-                                {isAudio ? ( 
-                                  <audio ref={(el) => { mediaRefs.current[clip.id] = el; }} src={clip.sourceUrl || ''} muted={false} /> 
-                                ) : ( 
-                                  <AssetPlayer 
-                                    innerRef={(el) => { mediaRefs.current[clip.id] = el; }} 
-                                    src={clip.sourceUrl || videoUrl || ''} 
-                                    strategy={clip.strategy}
-                                    className="w-full h-full"
-                                  />
-                                )}
-                              </div> 
-                            );
+                            return ( <div key={clip.id} style={{...style, display: isAudio ? 'none' : 'block'}} onClick={handleClipClick}>{isAudio ? ( <audio ref={(el) => { mediaRefs.current[clip.id] = el; }} src={clip.sourceUrl || ''} muted={false} /> ) : ( <video ref={(el) => { mediaRefs.current[clip.id] = el; }} src={clip.sourceUrl || videoUrl || ''} className="w-full h-full object-contain pointer-events-none" muted={false} playsInline crossOrigin={(!clip.sourceUrl && !videoUrl) ? undefined : "anonymous"} /> )}</div> );
                         } else { return ( <div key={clip.id} style={style} onClick={handleClipClick}><img src={clip.sourceUrl || ''} alt={clip.title} className="w-full h-full object-contain pointer-events-none" /></div> ); }
                     })}
                     {!videoUrl && clips.length === 0 && ( <label className="absolute inset-0 flex flex-col items-center justify-center text-neutral-500 hover:text-neutral-300 cursor-pointer transition-colors z-20"><Video className="w-16 h-16 mb-4 opacity-20" /><p className="font-medium text-lg mb-2">Click to upload video</p><p className="text-sm opacity-50">or drag and drop here</p><input type="file" accept="video/*" className="hidden" onChange={handleFileUpload} /></label> )}
@@ -1299,7 +1451,7 @@ export default function App() {
                     )}
                 </div>
               </div>
-              {/* Toolbar & Timeline */}
+              
               <div className="h-12 bg-neutral-900 border-t border-neutral-800 flex items-center justify-between px-6 z-[200] relative">
                   <div className="flex items-center gap-4">
                       <button onClick={togglePlay} className="w-8 h-8 flex items-center justify-center rounded-full bg-white text-black hover:bg-neutral-200 transition-colors">{isPlaying ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current ml-0.5" />}</button>
@@ -1334,7 +1486,26 @@ export default function App() {
               </div>
           </div>
           <div className="h-64 border-t border-neutral-800 bg-neutral-900/50 backdrop-blur-sm z-10 flex flex-col relative z-[90]">
-            <Timeline clips={clips} tracks={tracks} currentTime={currentTime} onSeek={handleSeek} onDelete={handleDelete} onSelect={handleSelectClip} onAddMediaRequest={(tid) => { setMediaModalTrackId(tid); setModalMode('initial'); }} onResize={handleClipResize} onReorder={handleClipReorder} onAddTrack={handleAddTrack} selectedClipIds={selectedClipIds} onTransitionRequest={() => {}} onCaptionRequest={() => setCaptionModalOpen(true)} onOpenFoundry={() => setIsFoundryOpen(true)} isSelectionMode={isSelectingScope} onRangeChange={(range) => setLiveScopeRange(range)} onRangeSelected={handleRangeSelected} />
+            <Timeline 
+                clips={clips} 
+                tracks={tracks} 
+                currentTime={currentTime} 
+                onSeek={handleSeek} 
+                onDelete={handleDelete} 
+                onSelect={handleSelectClip} 
+                onAddMediaRequest={(tid) => { setMediaModalTrackId(tid); setModalMode('initial'); }} 
+                onResize={handleClipResize} 
+                onReorder={handleClipReorder} 
+                onAddTrack={handleAddTrack} 
+                selectedClipIds={selectedClipIds} 
+                onTransitionRequest={() => {}} 
+                onCaptionRequest={() => setCaptionModalOpen(true)} 
+                onOpenFoundry={() => setFoundryOpen(true)} 
+                onEditImage={(clip) => setImageEditorClip(clip)}
+                isSelectionMode={isSelectingScope} 
+                onRangeChange={(range) => setLiveScopeRange(range)} 
+                onRangeSelected={handleRangeSelected} 
+            />
           </div>
         </div>
         <aside className="w-80 border-l border-neutral-800 bg-neutral-900 flex flex-col z-[150] relative">
@@ -1356,6 +1527,7 @@ export default function App() {
           />
         </aside>
       </div>
+      <AssetFoundryModal isOpen={foundryOpen} onClose={() => setFoundryOpen(false)} onAddAsset={handleAssetFoundryAdd} />
     </div>
   );
 }

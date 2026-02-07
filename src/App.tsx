@@ -1,4 +1,3 @@
-
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Timeline } from '../components/Timeline';
 import { CanvasControls } from '../components/CanvasControls';
@@ -14,6 +13,8 @@ import {
   Check, ChevronLeft, ShieldCheck 
 } from 'lucide-react';
 import { timelineStore } from '../timeline/store';
+import { AssetFoundryModal } from '../components/foundry/AssetFoundryModal';
+import { AssetConfig } from '../services/assetBrain';
 
 // AGENTS
 import { AgenticLoop } from '../services/agents/loopRunner';
@@ -536,6 +537,7 @@ const getSafeTrackId = (preferredTrack: number, clips: Clip[]): number => {
 export default function App() {
   const [tracks, setTracks] = useState<number[]>([0, 1, 2, 3]);
   const [clips, setClips] = useState<Clip[]>(timelineStore.getClips());
+  const [foundryOpen, setFoundryOpen] = useState(false);
   
   useEffect(() => { return timelineStore.subscribe(setClips); }, []);
   useEffect(() => {
@@ -633,6 +635,35 @@ export default function App() {
   // ----------------------------------------------------------------------
   // HANDLERS (DEFINED EARLY TO AVOID REFERENCE ERRORS)
   // ----------------------------------------------------------------------
+
+  const handleAssetFoundryAdd = (url: string, config: AssetConfig) => {
+    // Determine a safe track and time
+    const maxTrack = clips.length > 0 ? Math.max(...clips.map(c => c.trackId)) : 0;
+    const targetTrack = maxTrack + 1; // Always new track to be safe with blends
+    
+    // Find a spot near playhead
+    let startTime = currentTime;
+    
+    // Create Clip
+    timelineStore.addClip({
+        id: `foundry-${Date.now()}`,
+        title: config.originalPrompt.slice(0, 20),
+        type: 'video',
+        startTime: startTime,
+        duration: 5,
+        sourceStartTime: 0,
+        sourceUrl: url,
+        trackId: targetTrack,
+        strategy: config.strategy,
+        transform: { x: 0, y: 0, scale: 1, rotation: 0 }
+    });
+
+    // SYNC WITH CHAT: Log this action so the Agent Loop knows about it
+    setChatHistory(prev => [...prev, {
+        role: 'system',
+        text: `✨ Asset Foundry Action: Created "${config.originalPrompt}" using '${config.strategy}' strategy.`
+    }]);
+  };
 
   const triggerLocalUpload = () => {
       fileInputRef.current?.click();
@@ -1276,7 +1307,7 @@ export default function App() {
               </div>
           </div>
           <div className="h-64 border-t border-neutral-800 bg-neutral-900/50 backdrop-blur-sm z-10 flex flex-col relative z-[90]">
-            <Timeline clips={clips} tracks={tracks} currentTime={currentTime} onSeek={handleSeek} onDelete={handleDelete} onSelect={handleSelectClip} onAddMediaRequest={(tid) => { setMediaModalTrackId(tid); setModalMode('initial'); }} onResize={handleClipResize} onReorder={handleClipReorder} onAddTrack={handleAddTrack} selectedClipIds={selectedClipIds} onTransitionRequest={() => {}} onCaptionRequest={() => setCaptionModalOpen(true)} isSelectionMode={isSelectingScope} onRangeChange={(range) => setLiveScopeRange(range)} onRangeSelected={handleRangeSelected} />
+            <Timeline clips={clips} tracks={tracks} currentTime={currentTime} onSeek={handleSeek} onDelete={handleDelete} onSelect={handleSelectClip} onAddMediaRequest={(tid) => { setMediaModalTrackId(tid); setModalMode('initial'); }} onResize={handleClipResize} onReorder={handleClipReorder} onAddTrack={handleAddTrack} selectedClipIds={selectedClipIds} onTransitionRequest={() => {}} onCaptionRequest={() => setCaptionModalOpen(true)} onOpenFoundry={() => setFoundryOpen(true)} isSelectionMode={isSelectingScope} onRangeChange={(range) => setLiveScopeRange(range)} onRangeSelected={handleRangeSelected} />
           </div>
         </div>
         <aside className="w-80 border-l border-neutral-800 bg-neutral-900 flex flex-col z-[150] relative">
@@ -1298,6 +1329,7 @@ export default function App() {
           />
         </aside>
       </div>
+      <AssetFoundryModal isOpen={foundryOpen} onClose={() => setFoundryOpen(false)} onAddAsset={handleAssetFoundryAdd} />
     </div>
   );
 }

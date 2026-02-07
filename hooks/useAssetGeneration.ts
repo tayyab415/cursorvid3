@@ -15,7 +15,7 @@ export const useAssetGeneration = () => {
   const [result, setResult] = useState<GeneratedAsset | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const generateAsset = useCallback(async (prompt: string) => {
+  const generateAsset = useCallback(async (prompt: string, modelId: string = 'veo-3.1-fast-generate-preview') => {
     setStatus('analyzing');
     setError(null);
     setResult(null);
@@ -30,7 +30,7 @@ export const useAssetGeneration = () => {
       // Use standard settings for asset generation: 4s duration, 720p (for speed), 16:9
       const videoUrl = await generateVideo(
           config.enhancedPrompt,
-          'veo-3.1-fast-generate-preview', 
+          modelId, 
           '16:9',
           '720p',
           4

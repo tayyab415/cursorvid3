@@ -1,6 +1,6 @@
 
 import React, { useState } from 'react';
-import { X, Wand2, Sparkles, Loader2, Play, CheckCircle2, FlaskConical, MoveRight } from 'lucide-react';
+import { X, Wand2, Sparkles, Loader2, Play, CheckCircle2, FlaskConical, MoveRight, Settings2 } from 'lucide-react';
 import { useAssetGeneration } from '../../hooks/useAssetGeneration';
 import { AssetPlayer } from './AssetPlayer';
 import { AssetConfig } from '../../services/assetBrain';
@@ -11,15 +11,23 @@ interface AssetFoundryModalProps {
     onAddAsset: (url: string, config: AssetConfig) => void;
 }
 
+const VEO_MODELS = [
+    { id: 'veo-3.1-fast-generate-preview', label: 'Veo 3.1 Fast (Preview)', desc: 'Lowest latency, good for drafts' },
+    { id: 'veo-3.1-generate-preview', label: 'Veo 3.1 Quality', desc: 'Higher fidelity, slower generation' },
+    { id: 'veo-3.0-fast-generate-preview', label: 'Veo 3.0 Fast', desc: 'Previous gen fast model' },
+    { id: 'veo-3.0-generate-preview', label: 'Veo 3.0 Quality', desc: 'Previous gen high quality' },
+];
+
 export const AssetFoundryModal: React.FC<AssetFoundryModalProps> = ({ isOpen, onClose, onAddAsset }) => {
     const [prompt, setPrompt] = useState('');
+    const [selectedModel, setSelectedModel] = useState(VEO_MODELS[0].id);
     const { generateAsset, status, result, error, reset } = useAssetGeneration();
 
     if (!isOpen) return null;
 
     const handleGenerate = () => {
         if (!prompt.trim()) return;
-        generateAsset(prompt);
+        generateAsset(prompt, selectedModel);
     };
 
     const handleAdd = () => {
@@ -48,7 +56,7 @@ export const AssetFoundryModal: React.FC<AssetFoundryModalProps> = ({ isOpen, on
                         </button>
                     </div>
 
-                    <div className="p-6 flex-1 flex flex-col gap-6">
+                    <div className="p-6 flex-1 flex flex-col gap-6 overflow-y-auto">
                         <div>
                             <label className="block text-xs font-bold text-neutral-400 uppercase tracking-wider mb-2">
                                 Describe Asset
@@ -62,8 +70,32 @@ export const AssetFoundryModal: React.FC<AssetFoundryModalProps> = ({ isOpen, on
                             />
                         </div>
 
+                        {/* Model Selector */}
+                        <div>
+                            <label className="flex items-center gap-2 text-xs font-bold text-neutral-400 uppercase tracking-wider mb-2">
+                                <Settings2 className="w-3 h-3" /> Generator Model
+                            </label>
+                            <div className="relative">
+                                <select 
+                                    value={selectedModel} 
+                                    onChange={(e) => setSelectedModel(e.target.value)}
+                                    className="w-full bg-neutral-900 border border-neutral-700 rounded-xl p-2.5 text-xs text-neutral-200 focus:outline-none focus:border-purple-500 appearance-none"
+                                >
+                                    {VEO_MODELS.map(m => (
+                                        <option key={m.id} value={m.id}>{m.label}</option>
+                                    ))}
+                                </select>
+                                <div className="absolute inset-y-0 right-3 flex items-center pointer-events-none">
+                                    <svg className="w-3 h-3 text-neutral-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" /></svg>
+                                </div>
+                            </div>
+                            <p className="mt-1.5 text-[10px] text-neutral-500">
+                                {VEO_MODELS.find(m => m.id === selectedModel)?.desc}
+                            </p>
+                        </div>
+
                         {result && (
-                            <div className="bg-neutral-900/50 rounded-xl p-4 border border-neutral-800 space-y-3">
+                            <div className="bg-neutral-900/50 rounded-xl p-4 border border-neutral-800 space-y-3 animate-in slide-in-from-bottom-2 fade-in">
                                 <div className="flex items-center gap-2 text-xs font-bold text-neutral-300">
                                     <BrainIcon className="w-3 h-3 text-purple-400" />
                                     AI Analysis
@@ -86,7 +118,7 @@ export const AssetFoundryModal: React.FC<AssetFoundryModalProps> = ({ isOpen, on
                             </div>
                         )}
 
-                        <div className="mt-auto">
+                        <div className="mt-auto pt-4">
                             <button
                                 onClick={handleGenerate}
                                 disabled={status === 'analyzing' || status === 'generating' || !prompt.trim()}
