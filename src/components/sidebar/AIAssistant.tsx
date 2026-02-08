@@ -21,9 +21,7 @@ interface AIAssistantProps {
   isProcessing: boolean;
   activePlan: EditPlan | null;
   currentStepIndex: number;
-  workspaceFiles?: WorkspaceItem[];
-  onRequestAssetPick?: () => void; // New
-  pickedAsset?: {id: string, name: string, timestamp: number} | null; // New
+  workspaceFiles?: WorkspaceItem[]; // Added optional prop for assistant
 }
 
 export const AIAssistant: React.FC<AIAssistantProps> = ({ 
@@ -39,9 +37,7 @@ export const AIAssistant: React.FC<AIAssistantProps> = ({
     activePlan,
     currentStepIndex,
     mediaRefs,
-    workspaceFiles = [],
-    onRequestAssetPick,
-    pickedAsset
+    workspaceFiles = [] // Default to empty
 }) => {
   const [activeTab, setActiveTab] = useState<'director' | 'assistant'>('director');
   
@@ -224,8 +220,6 @@ export const AIAssistant: React.FC<AIAssistantProps> = ({
             clips={allClips} 
             workspaceFiles={workspaceFiles} 
             mediaRefs={mediaRefs}
-            onRequestAssetPick={onRequestAssetPick}
-            pickedAsset={pickedAsset}
         />
       )}
     </div>

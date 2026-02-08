@@ -28,6 +28,28 @@ export const TimelineOps = {
     store.updateClip(clipId, { duration: newDuration });
   },
 
+  trimClipStart: (store: TimelineStore, clipId: string, timeToRemove: number) => {
+    const clip = store.getClips().find(c => c.id === clipId);
+    if (!clip) return;
+
+    if (timeToRemove >= clip.duration) {
+        // Equivalent to delete if we remove everything
+        store.removeClip(clipId);
+        return;
+    }
+
+    const speed = clip.speed || 1;
+    store.updateClip(clipId, {
+        startTime: clip.startTime + timeToRemove,
+        duration: clip.duration - timeToRemove,
+        sourceStartTime: clip.sourceStartTime + (timeToRemove * speed)
+    });
+  },
+
+  setClipLayer: (store: TimelineStore, clipId: string, trackId: number) => {
+      store.updateClip(clipId, { trackId });
+  },
+
   moveClip: (store: TimelineStore, clipId: string, startTime: number, trackId?: number) => {
     const clip = store.getClips().find(c => c.id === clipId);
     if (clip) {

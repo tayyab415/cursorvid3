@@ -45,6 +45,30 @@ export const TIMELINE_PRIMITIVES: FunctionDeclaration[] = [
     }
   },
   {
+    name: 'trim_clip_start',
+    description: 'Trim the beginning of a clip. This adjusts start time and source offset.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        clipId: { type: Type.STRING },
+        timeToRemove: { type: Type.NUMBER, description: 'Seconds to remove from the start' }
+      },
+      required: ['clipId', 'timeToRemove']
+    }
+  },
+  {
+    name: 'set_clip_layer',
+    description: 'Move a clip to a specific track (layer) without changing its time.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        clipId: { type: Type.STRING },
+        trackId: { type: Type.NUMBER, description: 'Target track index (0 is bottom)' }
+      },
+      required: ['clipId', 'trackId']
+    }
+  },
+  {
     name: 'ripple_delete',
     description: 'Delete clip and shift subsequent clips on the same track left to fill the gap.',
     parameters: {
@@ -101,7 +125,7 @@ export const TIMELINE_PRIMITIVES: FunctionDeclaration[] = [
   },
   {
       name: 'smart_trim',
-      description: 'Trim a clip to a specific duration to tighten pacing.',
+      description: 'Trim the END of a clip to a specific duration.',
       parameters: {
           type: Type.OBJECT,
           properties: {

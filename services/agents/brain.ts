@@ -80,6 +80,10 @@ export class BrainAgent {
          - Use 'gemini-2.5-flash-image' (Fast) for simple icons, gradients, or quick mockups.
     4. **AUTONOMY**: Be decisive.
     5. **REFERENCING**: Use specific Clip IDs from the TIMELINE STATE in your plan operations.
+    6. **TRIMMING/CUTTING**:
+       - To trim from the start: use 'trim_clip_start' (removes first X seconds).
+       - To trim from the end: use 'smart_trim' (sets new duration).
+       - To move layers: use 'set_clip_layer'.
     
     OUTPUT JSON SCHEMA:
     {

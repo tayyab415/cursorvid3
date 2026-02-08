@@ -1,7 +1,7 @@
 
 import React, { useRef, useEffect, useState } from 'react';
 import { Clip } from '../types';
-import { X, Plus, Image as ImageIcon, Video, Layers, GripVertical, Mic, Wand2, Captions, Check, FlaskConical, Edit, Film } from 'lucide-react';
+import { X, Plus, Image as ImageIcon, Video, Layers, GripVertical, Mic, Wand2, Captions, Check, FlaskConical, Edit, Film, Trash2, MousePointer2 } from 'lucide-react';
 
 interface TimelineProps {
   clips: Clip[];
@@ -18,10 +18,13 @@ interface TimelineProps {
   onTransitionRequest?: (clipA: Clip, clipB: Clip) => void;
   onCaptionRequest?: () => void;
   onOpenFoundry?: () => void;
-  onEditImage?: (clip: Clip) => void; // Added prop
+  onEditImage?: (clip: Clip) => void; 
   isSelectionMode?: boolean; 
   onRangeChange?: (range: {start: number, end: number} | null) => void; 
   onRangeSelected?: () => void; 
+  onClipEject?: (clip: Clip) => void;
+  isPickingMode?: boolean; // NEW: Chat selection mode
+  onPick?: (id: string, name: string) => void; // NEW: Selection callback
 }
 
 export const Timeline: React.FC<TimelineProps> = ({ 
@@ -42,7 +45,10 @@ export const Timeline: React.FC<TimelineProps> = ({
     onEditImage,
     isSelectionMode = false,
     onRangeChange,
-    onRangeSelected
+    onRangeSelected,
+    onClipEject,
+    isPickingMode = false,
+    onPick
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [dragState, setDragState] = useState<{
@@ -61,6 +67,7 @@ export const Timeline: React.FC<TimelineProps> = ({
   const [snapLineX, setSnapLineX] = useState<number | null>(null);
   const [hoveredGap, setHoveredGap] = useState<{ trackId: number, index: number } | null>(null);
   const [dragOverTrackId, setDragOverTrackId] = useState<number | null>(null);
+  const [isEjectCandidate, setIsEjectCandidate] = useState(false); // Visual feedback for dragging out
 
   // Range Selection State
   const [selectionDrag, setSelectionDrag] = useState<{startX: number, currentX: number} | null>(null);
@@ -127,6 +134,17 @@ export const Timeline: React.FC<TimelineProps> = ({
       const handleMouseMove = (e: MouseEvent) => {
           if (!dragState) return;
           
+          // Eject Detection logic
+          if (dragState.type === 'move' && containerRef.current) {
+              const rect = containerRef.current.getBoundingClientRect();
+              // If dragged significantly above the timeline container (e.g. into the workspace)
+              if (e.clientY < rect.top - 50) {
+                  setIsEjectCandidate(true);
+              } else {
+                  setIsEjectCandidate(false);
+              }
+          }
+
           const deltaX = e.clientX - dragState.startX;
           const deltaSeconds = deltaX / 40; 
 
@@ -201,8 +219,13 @@ export const Timeline: React.FC<TimelineProps> = ({
       const handleMouseUp = (e: MouseEvent) => {
         if (dragState) {
              if (dragState.type === 'move') {
-                 // Commit the final state from our local tracking
-                 onReorder(dragState.clipId, dragState.currentStartTime, dragState.currentTrackId, true);
+                 if (isEjectCandidate && onClipEject) {
+                     const clip = clips.find(c => c.id === dragState.clipId);
+                     if (clip) onClipEject(clip);
+                 } else {
+                     // Commit the final state from our local tracking
+                     onReorder(dragState.clipId, dragState.currentStartTime, dragState.currentTrackId, true);
+                 }
              } else if (dragState.type === 'resize' && dragState.resizeMode) {
                  onResize(dragState.clipId, dragState.currentDuration, dragState.resizeMode, true);
              }
@@ -210,6 +233,7 @@ export const Timeline: React.FC<TimelineProps> = ({
         setDragState(null);
         setSnapLineX(null);
         setDragOverTrackId(null);
+        setIsEjectCandidate(false);
       };
 
       document.addEventListener('mousemove', handleMouseMove);
@@ -218,7 +242,7 @@ export const Timeline: React.FC<TimelineProps> = ({
           document.removeEventListener('mousemove', handleMouseMove);
           document.removeEventListener('mouseup', handleMouseUp);
       };
-  }, [dragState, onResize, onReorder, clips, currentTime, dragOverTrackId]);
+  }, [dragState, onResize, onReorder, clips, currentTime, dragOverTrackId, isEjectCandidate, onClipEject]);
 
   const totalDuration = clips.reduce((acc, clip) => Math.max(acc, clip.startTime + clip.duration), 0);
   const markers: number[] = [];
@@ -233,6 +257,9 @@ export const Timeline: React.FC<TimelineProps> = ({
   };
 
   const handleMouseDown = (e: React.MouseEvent) => {
+      // If Picking Mode is active, do not allow seeking/selection-drag via background
+      if (isPickingMode) return;
+
       // If Selection Mode is active, override default behavior
       if (isSelectionMode && containerRef.current) {
           const rect = containerRef.current.getBoundingClientRect();
@@ -292,7 +319,7 @@ export const Timeline: React.FC<TimelineProps> = ({
   };
 
   const startResize = (e: React.MouseEvent, clip: Clip, mode: 'start' | 'end') => {
-      if (isSelectionMode) return;
+      if (isSelectionMode || isPickingMode) return;
       e.preventDefault();
       e.stopPropagation();
       setDragState({ 
@@ -310,7 +337,7 @@ export const Timeline: React.FC<TimelineProps> = ({
   };
 
   const startMove = (e: React.MouseEvent, clip: Clip) => {
-      if (isSelectionMode) return;
+      if (isSelectionMode || isPickingMode) return;
       e.preventDefault();
       e.stopPropagation();
       onSelect(clip.id, e);
@@ -341,17 +368,17 @@ export const Timeline: React.FC<TimelineProps> = ({
     <div className={`w-full h-full bg-neutral-900 border-t border-neutral-800 flex flex-col relative select-none ${isSelectionMode ? 'cursor-crosshair' : ''}`}>
        <div className="h-8 border-b border-neutral-800 flex items-center justify-between px-2 bg-neutral-800/50">
            <div className="flex items-center gap-2">
-                <button disabled={isSelectionMode} onClick={() => onAddTrack('top')} className="flex items-center gap-1 text-[10px] bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 px-2 py-0.5 rounded text-neutral-300 hover:text-white transition-colors disabled:opacity-50">
+                <button disabled={isSelectionMode || isPickingMode} onClick={() => onAddTrack('top')} className="flex items-center gap-1 text-[10px] bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 px-2 py-0.5 rounded text-neutral-300 hover:text-white transition-colors disabled:opacity-50">
                     <Layers size={10} /> Add Track Above
                 </button>
-                <button disabled={isSelectionMode} onClick={() => onAddTrack('bottom')} className="flex items-center gap-1 text-[10px] bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 px-2 py-0.5 rounded text-neutral-300 hover:text-white transition-colors disabled:opacity-50">
+                <button disabled={isSelectionMode || isPickingMode} onClick={() => onAddTrack('bottom')} className="flex items-center gap-1 text-[10px] bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 px-2 py-0.5 rounded text-neutral-300 hover:text-white transition-colors disabled:opacity-50">
                     <Layers size={10} /> Add Track Below
                 </button>
                 <div className="w-px h-4 bg-neutral-700 mx-1" />
-                <button disabled={isSelectionMode} onClick={onCaptionRequest} className="flex items-center gap-1.5 text-[10px] bg-purple-900/30 hover:bg-purple-900/50 border border-purple-500/30 px-2 py-0.5 rounded text-purple-200 hover:text-white transition-colors disabled:opacity-50">
+                <button disabled={isSelectionMode || isPickingMode} onClick={onCaptionRequest} className="flex items-center gap-1.5 text-[10px] bg-purple-900/30 hover:bg-purple-900/50 border border-purple-500/30 px-2 py-0.5 rounded text-purple-200 hover:text-white transition-colors disabled:opacity-50">
                     <Mic size={10} /> Generate Captions
                 </button>
-                <button disabled={isSelectionMode} onClick={onOpenFoundry} className="flex items-center gap-1.5 text-[10px] bg-indigo-900/30 hover:bg-indigo-900/50 border border-indigo-500/30 px-2 py-0.5 rounded text-indigo-200 hover:text-white transition-colors disabled:opacity-50">
+                <button disabled={isSelectionMode || isPickingMode} onClick={onOpenFoundry} className="flex items-center gap-1.5 text-[10px] bg-indigo-900/30 hover:bg-indigo-900/50 border border-indigo-500/30 px-2 py-0.5 rounded text-indigo-200 hover:text-white transition-colors disabled:opacity-50">
                     <FlaskConical size={10} /> Asset Foundry
                 </button>
            </div>
@@ -359,8 +386,22 @@ export const Timeline: React.FC<TimelineProps> = ({
        </div>
 
       <div className="flex-1 overflow-x-auto overflow-y-auto scroll-smooth relative">
+        {isEjectCandidate && (
+            <div className="fixed top-14 left-0 right-80 h-32 z-[200] bg-red-500/20 border-b border-red-500/50 flex items-center justify-center pointer-events-none backdrop-blur-sm animate-in fade-in">
+                <span className="text-red-200 font-bold uppercase tracking-widest flex items-center gap-2">
+                    <Trash2 size={20} /> Release to Stash in Workspace
+                </span>
+            </div>
+        )}
         <div className="min-w-max relative min-h-full pb-8" ref={containerRef} onMouseDown={handleMouseDown}>
             
+            {/* PICKING OVERLAY */}
+            {isPickingMode && (
+                <div className="absolute inset-0 z-[100] pointer-events-none bg-blue-900/10">
+                    {/* Just a subtle tint to indicate mode, clips will handle cursor */}
+                </div>
+            )}
+
             {/* SELECTION OVERLAY LAYER */}
             {isSelectionMode && (
                 <div className="absolute inset-0 z-[100] pointer-events-none">
@@ -420,9 +461,14 @@ export const Timeline: React.FC<TimelineProps> = ({
                                         icon = isImage ? <ImageIcon size={10} className="text-purple-300" /> : <Video size={10} className="text-blue-300" />;
                                     }
 
+                                    // Special styling for Pick Mode
+                                    if (isPickingMode) {
+                                        bgClass = 'bg-neutral-700/50 hover:bg-blue-600/80 border-dashed border-blue-400/50 cursor-crosshair z-[110]';
+                                    }
+
                                     // Check for transition (omitted for brevity, same as previous)
                                     let transitionBtn = null;
-                                    if (!isDraggingThis && !isAudio && !isText && index < trackClips.length - 1) {
+                                    if (!isDraggingThis && !isAudio && !isText && index < trackClips.length - 1 && !isPickingMode) {
                                         const nextClip = trackClips[index + 1];
                                         if (nextClip.type !== 'audio' && nextClip.type !== 'text') {
                                             const clipEndTime = clip.startTime + clip.duration;
@@ -444,12 +490,27 @@ export const Timeline: React.FC<TimelineProps> = ({
                                         <React.Fragment key={clip.id}>
                                             <div
                                                 data-clip-body
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    if (isPickingMode && onPick) {
+                                                        onPick(clip.id, clip.title);
+                                                        return;
+                                                    }
+                                                }}
                                                 onMouseDown={(e) => startMove(e, clip)}
-                                                className={`group absolute top-1 bottom-1 rounded-md flex flex-col justify-between p-2 transition-all duration-0 ease-linear border overflow-hidden cursor-grab active:cursor-grabbing ${bgClass} ${isSelected ? 'border-white ring-2 ring-white/50 z-20' : 'z-10'}`}
+                                                className={`group absolute top-1 bottom-1 rounded-md flex flex-col justify-between p-2 transition-all duration-0 ease-linear border overflow-hidden ${isPickingMode ? 'cursor-crosshair' : 'cursor-grab active:cursor-grabbing'} ${bgClass} ${isSelected ? 'border-white ring-2 ring-white/50 z-20' : 'z-10'}`}
                                                 style={{ left: `${displayStart * 40}px`, width: `${displayDuration * 40}px`, boxShadow: isDraggingThis ? '0 4px 12px rgba(0,0,0,0.5)' : undefined, opacity: isDraggingThis ? 0.9 : 1, zIndex: isDraggingThis ? 100 : undefined }}
                                             >
-                                                <div data-resize-handle className="absolute left-0 top-0 bottom-0 w-3 cursor-w-resize hover:bg-white/20 z-40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity" onMouseDown={(e) => startResize(e, clip, 'start')}><div className="w-0.5 h-6 bg-white/50 rounded-full" /></div>
-                                                <div data-resize-handle className="absolute right-0 top-0 bottom-0 w-3 cursor-e-resize hover:bg-white/20 z-40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity" onMouseDown={(e) => startResize(e, clip, 'end')}><div className="w-0.5 h-6 bg-white/50 rounded-full" /></div>
+                                                {isPickingMode && (
+                                                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity">
+                                                        <div className="bg-blue-600 text-white text-[10px] font-bold px-2 py-1 rounded shadow-lg flex items-center gap-1">
+                                                            <MousePointer2 size={12} /> Add to Chat
+                                                        </div>
+                                                    </div>
+                                                )}
+
+                                                <div data-resize-handle className={`absolute left-0 top-0 bottom-0 w-3 cursor-w-resize hover:bg-white/20 z-40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity ${isPickingMode ? 'hidden' : ''}`} onMouseDown={(e) => startResize(e, clip, 'start')}><div className="w-0.5 h-6 bg-white/50 rounded-full" /></div>
+                                                <div data-resize-handle className={`absolute right-0 top-0 bottom-0 w-3 cursor-e-resize hover:bg-white/20 z-40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity ${isPickingMode ? 'hidden' : ''}`} onMouseDown={(e) => startResize(e, clip, 'end')}><div className="w-0.5 h-6 bg-white/50 rounded-full" /></div>
                                                 
                                                 <div className="flex items-center gap-1.5 mb-1 pointer-events-none">
                                                     {icon}
@@ -457,7 +518,7 @@ export const Timeline: React.FC<TimelineProps> = ({
                                                 </div>
 
                                                 {/* THE ADD MOTION / EDIT BUTTON */}
-                                                {isImage && isSelected && !isDraggingThis && (
+                                                {isImage && isSelected && !isDraggingThis && !isPickingMode && (
                                                     <button
                                                         onMouseDown={(e) => e.stopPropagation()}
                                                         onClick={(e) => { e.stopPropagation(); if(onEditImage) onEditImage(clip); }}
@@ -473,13 +534,13 @@ export const Timeline: React.FC<TimelineProps> = ({
                                                 )}
 
                                                 <span className={`text-[10px] pointer-events-none ${isActive || isSelected ? 'text-yellow-200' : 'text-white/50'}`}>{displayDuration.toFixed(1)}s</span>
-                                                <button onClick={(e) => { e.stopPropagation(); onDelete([clip.id]); }} className="absolute top-1 right-1 p-0.5 rounded-full bg-black/40 hover:bg-red-500 text-white/70 hover:text-white opacity-0 group-hover:opacity-100 transition-all z-30"><X size={10} strokeWidth={3} /></button>
+                                                <button onClick={(e) => { e.stopPropagation(); onDelete([clip.id]); }} className={`absolute top-1 right-1 p-0.5 rounded-full bg-black/40 hover:bg-red-500 text-white/70 hover:text-white opacity-0 group-hover:opacity-100 transition-all z-30 ${isPickingMode ? 'hidden' : ''}`}><X size={10} strokeWidth={3} /></button>
                                             </div>
                                             {transitionBtn}
                                         </React.Fragment>
                                     );
                                 })}
-                                <button disabled={isSelectionMode} onClick={() => onAddMediaRequest(trackId)} className="group absolute h-20 w-20 border-2 border-dashed border-neutral-700/50 hover:border-blue-500/50 bg-neutral-800/10 hover:bg-blue-500/5 rounded-lg flex flex-col items-center justify-center cursor-pointer transition-all z-0 top-2 hover:scale-105 active:scale-95 disabled:opacity-30 disabled:pointer-events-none" style={{ left: `${(trackClips.reduce((max, c) => Math.max(max, c.startTime + c.duration), 0) * 40) + 20}px` }}>
+                                <button disabled={isSelectionMode || isPickingMode} onClick={() => onAddMediaRequest(trackId)} className="group absolute h-20 w-20 border-2 border-dashed border-neutral-700/50 hover:border-blue-500/50 bg-neutral-800/10 hover:bg-blue-500/5 rounded-lg flex flex-col items-center justify-center cursor-pointer transition-all z-0 top-2 hover:scale-105 active:scale-95 disabled:opacity-30 disabled:pointer-events-none" style={{ left: `${(trackClips.reduce((max, c) => Math.max(max, c.startTime + c.duration), 0) * 40) + 20}px` }}>
                                     <div className="w-6 h-6 rounded-full bg-neutral-700 group-hover:bg-blue-500 flex items-center justify-center transition-colors"><Plus className="w-3 h-3 text-neutral-400 group-hover:text-white" strokeWidth={3} /></div>
                                     <span className="text-[9px] text-neutral-500 group-hover:text-blue-200 mt-1 font-medium">Add Media</span>
                                 </button>

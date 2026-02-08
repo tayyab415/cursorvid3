@@ -29,7 +29,7 @@ const getSafeTrackId = () => {
 const toolRegistry: Record<string, ToolDefinition> = {
     'move_clip': {
         execute: async (args) => {
-            TimelineOps.moveClip(timelineStore, args.clipId, Number(args.startTime), Number(args.trackId));
+            TimelineOps.moveClip(timelineStore, args.clipId, Number(args.startTime), args.trackId !== undefined ? Number(args.trackId) : undefined);
             return { success: true, message: `Moved clip ${args.clipId}` };
         }
     },
@@ -57,7 +57,21 @@ const toolRegistry: Record<string, ToolDefinition> = {
     'smart_trim': {
         execute: async (args) => {
             TimelineOps.trimClip(timelineStore, args.clipId, Number(args.newDuration));
-            return { success: true, message: `Trimmed ${args.clipId}` };
+            return { success: true, message: `Trimmed end of ${args.clipId}` };
+        }
+    },
+
+    'trim_clip_start': {
+        execute: async (args) => {
+            TimelineOps.trimClipStart(timelineStore, args.clipId, Number(args.timeToRemove));
+            return { success: true, message: `Trimmed start of ${args.clipId}` };
+        }
+    },
+
+    'set_clip_layer': {
+        execute: async (args) => {
+            TimelineOps.setClipLayer(timelineStore, args.clipId, Number(args.trackId));
+            return { success: true, message: `Moved ${args.clipId} to track ${args.trackId}` };
         }
     },
 

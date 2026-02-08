@@ -1,4 +1,5 @@
 
+
 /**
  * Extracts a sequence of frames from a video file.
  * This simulates "Video Understanding" by feeding the model a visual storyboard
@@ -289,3 +290,11 @@ function bufferToWav(abuffer: AudioBuffer) {
         pos += 4;
     }
 }
+
+// Format time helper
+export const formatTime = (seconds: number) => {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  const ms = Math.floor((seconds % 1) * 10);
+  return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}.${ms}`;
+};

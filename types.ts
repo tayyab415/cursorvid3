@@ -32,6 +32,15 @@ export interface Clip {
   volume?: number; // Audio volume 0-1 (default 1)
 }
 
+export interface WorkspaceItem {
+  id: string;
+  type: 'video' | 'image' | 'audio';
+  url: string;
+  name: string;
+  duration: number;
+  thumbnail?: string;
+}
+
 export interface AgentContext {
   clips: Clip[];
   selectedClipIds: string[];

@@ -1,5 +1,5 @@
 
-import { GoogleGenAI, Type, FunctionDeclaration, Modality, FunctionCallingConfigMode } from "@google/genai";
+import { GoogleGenAI, Type, FunctionDeclaration, Modality, FunctionCallingConfigMode, GenerateContentResponse } from "@google/genai";
 import { Clip, ToolAction, PlacementDecision, EditPlan, Suggestion, PlanStep, VideoIntent } from "../types";
 import { TIMELINE_PRIMITIVES } from "./timelinePrimitives";
 
@@ -138,7 +138,7 @@ Do not hallucinate responses. Use tools.
     try {
         const msgPayload = typeof message === 'string' ? { message } : { message: message };
         // Apply retry logic here
-        const result = await callWithRetry(() => chat.sendMessage(msgPayload));
+        const result: GenerateContentResponse = await callWithRetry(() => chat.sendMessage(msgPayload));
         
         let toolAction: ToolAction | undefined;
         let editPlan: EditPlan | undefined;
@@ -223,7 +223,7 @@ export const performDeepAnalysis = async (mediaParts: any[]): Promise<string> =>
     `;
 
     try {
-        const response = await callWithRetry(() => ai.models.generateContent({
+        const response: GenerateContentResponse = await callWithRetry(() => ai.models.generateContent({
             model: 'gemini-3-pro-preview', // Keep Pro for analysis as it's better at vision
             contents: {
                 role: 'user',
@@ -250,14 +250,14 @@ export const generateRefinement = async (originalContext: string, toolType: 'VOI
         ? `You previously suggested a voiceover with this reasoning: "${originalContext}". Write a short, engaging, professional script (max 2 sentences) for this voiceover. Return ONLY the raw text to be spoken. Do not include quotes or labels.`
         : `You previously suggested a video transition with this reasoning: "${originalContext}". Write a highly detailed visual prompt for an AI video generator to create this transition. Return ONLY the raw prompt text.`;
     
-    const response = await callWithRetry(() => ai.models.generateContent({ model: 'gemini-3-flash-preview', contents: prompt }));
+    const response: GenerateContentResponse = await callWithRetry(() => ai.models.generateContent({ model: 'gemini-3-flash-preview', contents: prompt }));
     return response.text?.trim() || "";
 };
 
 export const determinePlacement = async (currentClips: Clip[], assetType: 'audio' | 'video', assetDuration: number, intentReasoning: string, proposedTimestamp?: number): Promise<PlacementDecision> => {
     const ai = getAiClient();
     const prompt = `Timeline: ${JSON.stringify(currentClips.map(c=>({id:c.id, t:c.type, s:c.startTime, d:c.duration})))}. User intent: "${intentReasoning}". New asset: ${assetType} (${assetDuration}s). Decision? JSON: {strategy, startTime, trackId, reasoning}`;
-    const response = await callWithRetry(() => ai.models.generateContent({ model: "gemini-3-flash-preview", contents: prompt, config: { responseMimeType: "application/json" }}));
+    const response: GenerateContentResponse = await callWithRetry(() => ai.models.generateContent({ model: "gemini-3-flash-preview", contents: prompt, config: { responseMimeType: "application/json" }}));
     return JSON.parse(response.text || "{}");
 };
 
@@ -268,7 +268,7 @@ export const analyzeVideoFrames = async (base64Frames: string[], prompt: string)
     const cleanData = frameData.split(',')[1] || frameData;
     parts.push({ inlineData: { mimeType: 'image/jpeg', data: cleanData }});
   });
-  const response = await callWithRetry(() => ai.models.generateContent({ model: 'gemini-3-pro-preview', contents: { parts: parts }}));
+  const response: GenerateContentResponse = await callWithRetry(() => ai.models.generateContent({ model: 'gemini-3-pro-preview', contents: { parts: parts }}));
   return response.text || "";
 };
 
@@ -332,7 +332,7 @@ export const optimizePrompt = async (originalPrompt: string, targetModelType: 'i
     contents[0].parts.push({ text: promptText });
 
     try {
-        const response = await callWithRetry(() => ai.models.generateContent({
+        const response: GenerateContentResponse = await callWithRetry(() => ai.models.generateContent({
             model: 'gemini-3-flash-preview', // Use Flash because it is multimodal and fast
             contents: contents
         }));
@@ -348,7 +348,7 @@ export const generateImage = async (prompt: string, model: string = 'gemini-2.5-
     try {
         // Handle Imagen models
         if (model.includes('imagen-')) {
-            const response = await callWithRetry(() => ai.models.generateImages({
+            const response: any = await callWithRetry(() => ai.models.generateImages({
                 model: model,
                 prompt: prompt,
                 config: {
@@ -364,7 +364,7 @@ export const generateImage = async (prompt: string, model: string = 'gemini-2.5-
         }
 
         // Handle Nano Banana / Flash Image
-        const response = await callWithRetry(() => ai.models.generateContent({
+        const response: GenerateContentResponse = await callWithRetry(() => ai.models.generateContent({
             model: model,
             contents: { parts: [{ text: prompt }] },
             config: {
@@ -390,7 +390,7 @@ export const editImage = async (base64Image: string, prompt: string, model: stri
     const cleanData = base64Image.includes(',') ? base64Image.split(',')[1] : base64Image;
     
     try {
-        const response = await callWithRetry(() => ai.models.generateContent({
+        const response: GenerateContentResponse = await callWithRetry(() => ai.models.generateContent({
             model: model,
             contents: {
                 parts: [
@@ -518,7 +518,7 @@ const pcmToWav = (pcmData: Uint8Array, sampleRate: number, numChannels: number):
 
 export const generateSpeech = async (text: string, voiceName: string = 'Kore'): Promise<string> => {
     const ai = getAiClient();
-    const response = await callWithRetry(() => ai.models.generateContent({
+    const response: GenerateContentResponse = await callWithRetry(() => ai.models.generateContent({
         model: "gemini-2.5-flash-preview-tts",
         contents: [{ parts: [{ text }] }],
         config: { 

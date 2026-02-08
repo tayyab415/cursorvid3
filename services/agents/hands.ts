@@ -24,8 +24,8 @@ export class HandsAgent {
 
       // Check if tool requires approval via metadata
       if (toolDef && toolDef.requiresApproval) {
-          // Safety defaults for generation parameters
-          if (parameters.trackId === undefined || parameters.trackId < 2) {
+          // Safety defaults for generation parameters if not provided
+          if (parameters.trackId === undefined) {
               const clips = timelineStore.getClips();
               const safeTrack = clips.length === 0 ? 1 : Math.max(...clips.map(c => c.trackId)) + 1;
               parameters.trackId = safeTrack;
