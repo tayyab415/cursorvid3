@@ -99,3 +99,6 @@
 ## 2026-08-28 13:50
 - Enhance async data processing and batch execution routines
 
+## 2026-08-28 18:30
+- Update release notes and clean up temporary build artifacts
+
